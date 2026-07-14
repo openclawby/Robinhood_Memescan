@@ -1,0 +1,317 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Robinhood Meme Monitor</title>
+<style>
+  :root { --bg:#0b0e14; --panel:#12161f; --panel2:#161b26; --border:#232a38; --fg:#e6edf3; --dim:#8b95a5; --accent:#4a9eff; --green:#3fb950; --red:#f85149; --amber:#d29922; --pink:#db61a2; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:13px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; }
+  header { position:sticky; top:0; z-index:20; background:linear-gradient(180deg,#12161f,#0f131b); border-bottom:1px solid var(--border); padding:9px 16px; display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
+  h1 { font-size:15px; margin:0; font-weight:700; letter-spacing:.2px; }
+  .stat { color:var(--dim); font-size:12px; } .stat b { color:var(--fg); font-weight:600; }
+  .grow { flex:1; }
+  .tabbtn { padding:7px 15px; border:1px solid var(--border); border-radius:8px; cursor:pointer; color:var(--dim); background:#12161f; font-weight:600; font-size:13px; }
+  .tabbtn.on { color:#fff; background:var(--accent); border-color:var(--accent); }
+  .view { padding:12px 14px; }
+  /* panels */
+  .panel { background:var(--panel); border:1px solid var(--border); border-radius:12px; overflow:hidden; }
+  .phead { display:flex; align-items:center; gap:12px; padding:10px 14px; background:var(--panel2); border-bottom:1px solid var(--border); }
+  .phead .t { font-weight:700; font-size:14px; }
+  .phead .meta { color:var(--dim); font-size:12px; }
+  .pbody { overflow:auto; max-height:calc(100vh - 150px); }
+  /* status pill (activity feedback) */
+  .pill { font-size:12px; padding:2px 10px; border-radius:11px; background:#1a2030; color:var(--dim); display:inline-flex; align-items:center; gap:6px; font-weight:600; white-space:nowrap; }
+  .pill.run { color:var(--green); background:#0f2a17; }
+  .pill.idle { color:var(--dim); background:#1a2030; }
+  .pill.paused { color:var(--amber); background:#2e2410; }
+  .pill .dot { width:7px; height:7px; border-radius:50%; background:var(--green); animation:pulse 1s infinite; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.25} }
+  /* table */
+  table { border-collapse:collapse; width:100%; white-space:nowrap; }
+  th, td { padding:6px 10px; border-bottom:1px solid var(--border); text-align:right; }
+  th:first-child, td:first-child, .l { text-align:left; }
+  thead th { position:sticky; top:0; background:#1a2030; color:var(--dim); font-weight:600; cursor:pointer; font-size:12px; z-index:1; }
+  thead th:hover { color:var(--fg); } th .arrow { color:var(--accent); }
+  tbody tr:hover { background:#161d2b; }
+  tbody tr td { transition:background .3s; }
+  .mono { font-family:ui-monospace,Menlo,monospace; font-size:12px; }
+  a { color:var(--accent); text-decoration:none; } a:hover { text-decoration:underline; }
+  .badge { display:inline-block; padding:1px 8px; border-radius:10px; font-size:11px; font-weight:600; }
+  .dim { color:var(--dim); } .empty { color:#39414f; } .sym { font-weight:600; } .nm { color:var(--dim); font-size:11px; }
+  .logo { width:16px;height:16px;border-radius:50%;vertical-align:middle;margin-right:5px;object-fit:cover;background:#222; }
+  .yes { color:var(--green); font-weight:600; } .pos { color:var(--green); font-weight:600; }
+  button { background:var(--accent); color:#fff; border:0; border-radius:7px; padding:6px 12px; font-size:12px; font-weight:600; cursor:pointer; }
+  button.off { background:#30384a; } button.ghost { background:transparent; border:1px solid var(--border); color:var(--fg); }
+  button.sm { padding:4px 11px; font-size:12px; }
+  button.mini { background:transparent; color:var(--amber); padding:2px 7px; font-size:14px; } button.del { background:transparent; color:var(--red); padding:2px 6px; font-size:13px; }
+  button.cp { background:transparent; border:0; color:var(--dim); cursor:pointer; padding:0 3px; margin-left:3px; font-size:12px; line-height:1; vertical-align:baseline; }
+  button.cp:hover { color:var(--accent); } button.cp.ok { color:var(--green); transform:scale(1.25); transition:transform .1s; }
+  input.in, select.in { background:#0b0e14; border:1px solid var(--border); color:var(--fg); border-radius:6px; padding:5px 8px; font-size:12px; }
+  input.freq { width:56px; text-align:right; } .in.wide { width:320px; }
+  .flash { animation:flash 1.4s ease-out; } @keyframes flash { from { background:#1f6feb33; } to { background:transparent; } }
+  /* admin */
+  #view-admin { display:grid; grid-template-columns:repeat(auto-fit,minmax(300px,1fr)); gap:12px; }
+  .card { background:var(--panel); border:1px solid var(--border); border-radius:12px; padding:14px 16px; }
+  .card h3 { margin:0 0 12px; font-size:13px; color:var(--accent); font-weight:700; }
+  .row { display:flex; align-items:center; justify-content:space-between; gap:10px; padding:6px 0; border-bottom:1px solid #1b2130; }
+  .row:last-child { border-bottom:0; } .row .lbl { color:var(--dim); }
+  label.chk { display:flex; align-items:center; gap:8px; padding:5px 0; cursor:pointer; }
+  #toast { position:fixed; bottom:18px; right:18px; background:var(--panel); border:1px solid var(--accent); padding:9px 15px; border-radius:9px; opacity:0; transition:opacity .3s; z-index:99; }
+  #toast.on { opacity:1; }
+</style>
+</head>
+<body>
+<header>
+  <h1>🦬 Robinhood Meme Monitor</h1>
+  <span class="stat" id="s-block">block —</span>
+  <span class="stat" id="s-tok">tokens —</span>
+  <span class="stat" id="s-api">API —</span>
+  <span class="stat" id="s-act"></span>
+  <span class="grow"></span>
+  <span class="stat" id="s-err"></span>
+  <button class="tabbtn on" id="tab-w1" onclick="switchTab('w1')">① 新发射</button>
+  <button class="tabbtn" id="tab-w2" onclick="switchTab('w2')">② Top100</button>
+  <button class="tabbtn" id="tab-w3" onclick="switchTab('w3')">③ 收藏</button>
+  <button class="tabbtn" id="tab-w4" onclick="switchTab('w4')">④ 3天新币</button>
+  <button class="tabbtn" id="tab-admin" onclick="switchTab('admin')">⚙️ 管理</button>
+</header>
+
+<div class="view" id="view-w1">
+  <div class="panel"><div class="phead"><span class="t">① 新发射实时</span><span class="pill" id="pill-w1">—</span><span class="grow"></span><span class="meta" id="ph-w1"></span><button class="ghost sm" id="pause-w1" onclick="toggleWin('w1')"></button></div>
+  <div class="pbody"><table><thead><tr id="head-w1"></tr></thead><tbody id="body-w1"></tbody></table></div></div>
+</div>
+<div class="view" id="view-w2" hidden>
+  <div class="panel"><div class="phead"><span class="t">② Top100 meme · 按24h交易量</span><span class="pill" id="pill-w2">—</span><span class="grow"></span><span class="meta" id="ph-w2"></span><button class="ghost sm" id="pause-w2" onclick="toggleWin('w2')"></button></div>
+  <div class="pbody"><table><thead><tr id="head-w2"></tr></thead><tbody id="body-w2"></tbody></table></div></div>
+</div>
+<div class="view" id="view-w3" hidden>
+  <div class="panel"><div class="phead"><span class="t">③ 收藏 · 深度分析</span><span class="pill" id="pill-w3">—</span><span class="grow"></span><span class="meta" id="ph-w3"></span><button class="ghost sm" id="pause-w3" onclick="toggleWin('w3')"></button></div>
+  <div class="pbody"><table><thead><tr id="head-w3"></tr></thead><tbody id="body-w3"></tbody></table></div></div>
+</div>
+<div class="view" id="view-w4" hidden>
+  <div class="panel"><div class="phead"><span class="t">④ 3天内新币 · Top100 按交易量</span><span class="pill" id="pill-w4">—</span><span class="grow"></span><span class="meta" id="ph-w4"></span><button class="ghost sm" id="pause-w4" onclick="toggleWin('w4')"></button></div>
+  <div class="pbody"><table><thead><tr id="head-w4"></tr></thead><tbody id="body-w4"></tbody></table></div></div>
+</div>
+<div class="view" id="view-admin" hidden></div>
+<div id="toast"></div>
+
+<script>
+const EXP="https://robinhoodchain.blockscout.com";
+const TABS=["w1","w2","w3","w4"];
+const MARK={w1:"①",w2:"②",w3:"③",w4:"④"};
+// ---------- formatters ----------
+function esc(s){ return (s==null?"":""+s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
+function empty(){ return `<span class="empty">—</span>`; }
+function pend(){ return `<span class="dim">…</span>`; }
+function fmt(n){ n=+n; if(!isFinite(n)) return "—"; return n>=1?n.toLocaleString(undefined,{maximumFractionDigits:2}):n.toPrecision(3); }
+function usd(n){ if(n==null||!isFinite(+n)) return empty(); n=+n; const a=Math.abs(n);
+  if(a>=1e9)return "$"+(n/1e9).toFixed(2)+"B"; if(a>=1e6)return "$"+(n/1e6).toFixed(2)+"M";
+  if(a>=1e3)return "$"+(n/1e3).toFixed(1)+"K"; return "$"+n.toFixed(a<1?(a<0.01?6:4):2); }
+function num(n){ return (n==null)?pend():(+n).toLocaleString(); }
+function xnum(v){ if(v==null) return empty(); return (+v>=100)?`<b class="pos">≥100</b>`:(+v>0?(+v):`<span class="dim">0</span>`); }
+function txc(n){ return (n==null)?pend():`<span class="${n>0?'':'dim'}">${(+n).toLocaleString()}</span>`; }
+function cnt(v){ return v==null?empty():(v>0?`<b class="pos">${v}</b>`:`<span class="dim">0</span>`); }
+function short(a){ return a? a.slice(0,6)+"…"+a.slice(-4):""; }
+function addr(a,k){ return a?`<a href="${EXP}/${k}/${a}" target="_blank" title="${a}">${short(a)}</a>${copyBtn(a)}`:empty(); }
+function copyBtn(t){ return `<button class="cp" title="复制 ${t}" onclick="event.stopPropagation();copyText('${t}',this)">⧉</button>`; }
+function fbCopy(t,cb){ const ta=document.createElement("textarea"); ta.value=t; ta.style.cssText="position:fixed;opacity:0;left:-9999px"; document.body.appendChild(ta); ta.focus(); ta.select(); try{document.execCommand("copy");}catch(e){} ta.remove(); cb&&cb(); }
+function copyText(t,btn){
+  const orig=btn?btn.textContent:"";
+  const ok=()=>{ if(btn){ btn.textContent="✓"; btn.classList.add("ok"); setTimeout(()=>{btn.textContent=orig;btn.classList.remove("ok");},1200); } toast("✓ 已复制 "+(t.length>16?t.slice(0,6)+"…"+t.slice(-4):t)); };
+  try{ if(navigator.clipboard&&navigator.clipboard.writeText){ navigator.clipboard.writeText(t).then(ok,()=>fbCopy(t,ok)); return; } }catch(e){}
+  fbCopy(t,ok);
+}
+function nameCell(t){ const ic=t.icon?`<img class="logo" src="${t.icon}" onerror="this.remove()">`:''; return `${ic}<span class="sym">${esc(t.symbol||"?")}</span>${t.name?` <span class="nm">${esc(t.name)}</span>`:""}`; }
+function ago(ts){ if(!ts)return "—"; const s=Math.max(0,Date.now()/1000-ts); if(s<60)return Math.floor(s)+"s"; if(s<3600)return Math.floor(s/60)+"m"; if(s<86400)return Math.floor(s/3600)+"h"; return Math.floor(s/86400)+"d"; }
+function timeCell(ts){ return ts?`<span title="${new Date(ts*1000).toISOString()}">${ago(ts)} ago</span>`:pend(); }
+function isoAgo(s){ return s?ago(Date.parse(s)/1000)+" ago":empty(); }
+function kolCell(t){ if(t.creator_is_kol==null) return pend();
+  return t.creator_is_kol? `<span class="yes">✓KOL</span>${t.creator_twitter?` <a href="https://x.com/${t.creator_twitter}" target="_blank">@${esc(t.creator_twitter)}</a>`:""}` : `<span class="dim">否</span>`; }
+function fav(ca){ const f=prompt("加入③收藏，监控频率（秒）：","60"); if(f===null)return; fetch("/api/watch",{method:"POST",headers:H,body:JSON.stringify({ca,interval:+f||60})}).then(()=>toast("已收藏 "+short(ca))); }
+function favBtn(t){ return `<button class="mini" title="收藏" onclick="fav('${t.ca}')">★</button>`; }
+function delBtn(t){ return `<button class="del" title="移除" onclick="unwatch('${t.ca}')">✕</button>`; }
+function freqCell(t){ return `<input class="in freq" value="${t.interval}" title="监控频率(秒)" onchange="setFreq('${t.ca}',this.value)">s`; }
+const ANA_RUN=["gathering","analyzing","rendering","started"];
+function anaCell(t){ const a=ANA[t.ca]||{};
+  if(a.has_report||a.status==="done") return `<a href="/api/report/${t.ca}" target="_blank">📄 报告</a> <button class="mini" title="重新分析" onclick="analyze('${t.ca}')">🔄</button>`;
+  if(ANA_RUN.includes(a.status)) return `<span class="pos">⏳ ${esc(a.step||a.status)}</span>`;
+  if(a.status==="error") return `<span class="dim" title="${esc(a.error||'')}">⚠ 失败</span> <button class="mini" onclick="analyze('${t.ca}')">🔄</button>`;
+  return `<button class="mini" title="用 ${STATUS.engine==='codex'?'Codex':'Claude'} 深度分析：抓链上+X→本地wiki→报告→PDF" onclick="analyze('${t.ca}')">🔬 分析</button>`; }
+const PALETTE=["#4a9eff","#3fb950","#d29922","#db61a2","#a371f7","#f0883e","#39c5cf","#e35"]; const PC={};
+function pc(p){ if(!(p in PC))PC[p]=PALETTE[Object.keys(PC).length%PALETTE.length]; return PC[p]; }
+function platCell(t){ const p=t.platform; return p?`<span class="badge" style="background:${pc(p)}22;color:${pc(p)}">${esc(p)}</span>`:empty(); }
+
+// ---------- columns ----------
+const COLS={
+  w1:[
+    {k:"platform",label:"平台",cls:"l",r:platCell},
+    {k:"symbol",label:"名称",cls:"l",r:nameCell},
+    {k:"ca",label:"CA",cls:"l mono",r:t=>addr(t.ca,"token")},
+    {k:"created_ts",label:"创建时间",r:t=>timeCell(t.created_ts)},
+    {k:"creator",label:"创建者",cls:"mono",r:t=>addr(t.creator,"address")},
+    {k:"creator_is_kol",label:"是否KOL",cls:"l",r:kolCell},
+    {k:"tx_robinhood",label:"rh笔",r:t=>txc(t.tx_robinhood)},
+    {k:"tx_eth",label:"ETH笔",r:t=>txc(t.tx_eth)},
+    {k:"tx_bsc",label:"BSC笔",r:t=>txc(t.tx_bsc)},
+    {k:"tx_base",label:"BASE笔",r:t=>txc(t.tx_base)},
+    {k:"tx_hyperevm",label:"hyperEVM笔",r:t=>txc(t.tx_hyperevm)},
+    {k:"_fav",label:"★",r:favBtn},
+  ],
+  w2:[
+    {k:"platform",label:"平台",cls:"l",r:platCell},
+    {k:"symbol",label:"名称",cls:"l",r:nameCell},
+    {k:"ca",label:"CA",cls:"l mono",r:t=>addr(t.ca,"token")},
+    {k:"price",label:"价格",r:t=>usd(t.price)},
+    {k:"mcap",label:"市值",r:t=>usd(t.mcap)},
+    {k:"volume24",label:"24h量",r:t=>usd(t.volume24)},
+    {k:"holders",label:"holders",r:t=>num(t.holders)},
+    {k:"transfers",label:"交易数",r:t=>num(t.transfers)},
+    {k:"liquidity",label:"流动性",r:t=>usd(t.liquidity)},
+    {k:"eth_in_pools",label:"池ETH",r:t=>t.eth_in_pools==null?empty():`${fmt(t.eth_in_pools)} Ξ`},
+    {k:"x_ca",label:"X舆情",r:t=>xnum(t.x_ca)},
+    {k:"_fav",label:"★",r:favBtn},
+  ],
+  w4:[
+    {k:"platform",label:"平台",cls:"l",r:platCell},
+    {k:"symbol",label:"名称",cls:"l",r:nameCell},
+    {k:"ca",label:"CA",cls:"l mono",r:t=>addr(t.ca,"token")},
+    {k:"created_ts",label:"创建时间",r:t=>timeCell(t.created_ts)},
+    {k:"price",label:"价格",r:t=>usd(t.price)},
+    {k:"mcap",label:"市值",r:t=>usd(t.mcap)},
+    {k:"volume24",label:"24h量",r:t=>usd(t.volume24)},
+    {k:"holders",label:"holders",r:t=>num(t.holders)},
+    {k:"transfers",label:"交易数",r:t=>num(t.transfers)},
+    {k:"liquidity",label:"流动性",r:t=>usd(t.liquidity)},
+    {k:"eth_in_pools",label:"池ETH",r:t=>t.eth_in_pools==null?empty():`${fmt(t.eth_in_pools)} Ξ`},
+    {k:"x_ca",label:"X舆情",r:t=>xnum(t.x_ca)},
+    {k:"_fav",label:"★",r:favBtn},
+  ],
+  w3:[
+    {k:"symbol",label:"符号",cls:"l",r:nameCell},
+    {k:"ca",label:"CA",cls:"l mono",r:t=>addr(t.ca,"token")},
+    {k:"interval",label:"频率",r:freqCell},
+    {k:"price",label:"价格",r:t=>usd(t.price)},
+    {k:"mcap",label:"市值",r:t=>usd(t.mcap)},
+    {k:"volume24",label:"24h量",r:t=>usd(t.volume24)},
+    {k:"liquidity",label:"流动性",r:t=>usd(t.liquidity)},
+    {k:"kol",label:"KOL数",r:t=>cnt(t.kol)},
+    {k:"smart",label:"聪明钱数",r:t=>cnt(t.smart)},
+    {k:"x_ca",label:"X舆情",r:t=>xnum(t.x_ca)},
+    {k:"updated",label:"更新",r:t=>isoAgo(t.updated)},
+    {k:"_ana",label:"深度分析",cls:"l",r:anaCell},
+    {k:"_del",label:"",r:delBtn},
+  ],
+};
+const SORT={w1:{k:"created_ts",d:-1},w2:{k:"volume24",d:-1},w3:{k:null,d:-1},w4:{k:"volume24",d:-1}};
+const SEEN={w1:new Set(),w2:new Set(),w3:new Set(),w4:new Set()};
+const DATA={w1:[],w2:[],w3:[],w4:[]};
+const H={"Content-Type":"application/json"};
+let ANA={}, STATUS={}, tab="w1";
+
+// ---------- render ----------
+function renderHead(win){ document.getElementById("head-"+win).innerHTML=COLS[win].map(c=>{
+  const s=SORT[win], a=c.k===s.k?`<span class="arrow">${s.d<0?"▼":"▲"}</span>`:"";
+  return `<th class="${c.cls||''}" onclick="sortBy('${win}','${c.k}')">${c.label} ${a}</th>`;}).join(""); }
+function sortBy(win,k){ if(k.startsWith("_"))return; const s=SORT[win]; if(s.k===k)s.d=-s.d; else{s.k=k;s.d=-1;} renderHead(win); drawPanel(win); }
+function drawPanel(win){
+  let r=[...(DATA[win]||[])]; const s=SORT[win];
+  if(s.k) r.sort((a,b)=>{ let x=a[s.k],y=b[s.k];
+    if(x==null)x=(typeof y==="number"?-Infinity:""); if(y==null)y=(typeof x==="number"?-Infinity:"");
+    if(typeof x==="string"||typeof y==="string"){x=""+x;y=""+y;return x<y?-s.d:x>y?s.d:0;} return (x-y)*s.d; });
+  if(!r.length){ const w=STATUS[win]||{}; let msg;
+    if(win==="w3") msg="暂无收藏 —— 在 ①/②/④ 表格点 ★ 添加";
+    else if(!w.enabled) msg="⏸ 已暂停（在此窗口或④管理开启）";
+    else if(w.running) msg="⏳ "+esc(w.phase||"扫描中…");
+    else msg="⏳ 加载中…（首屏可能需要 1-2 分钟）";
+    document.getElementById("body-"+win).innerHTML=`<tr><td class="dim" colspan="${COLS[win].length}" style="padding:18px;text-align:center">${msg}</td></tr>`; return; }
+  const seen=SEEN[win];
+  document.getElementById("body-"+win).innerHTML=r.map(t=>{
+    const isNew=!seen.has(t.ca); if(isNew)seen.add(t.ca);
+    return `<tr class="${isNew&&seen.size>1?'flash':''}">`+COLS[win].map(c=>`<td class="${c.cls||''}">${c.r(t)}</td>`).join("")+"</tr>";}).join("");
+}
+function updatePanelHeader(win){ const w=STATUS[win]||{};
+  const pill=document.getElementById("pill-"+win);
+  if(pill){
+    if(!w.enabled){ pill.className="pill paused"; pill.textContent="⏸ 已暂停"; }
+    else if(w.running){ pill.className="pill run"; pill.innerHTML=`<span class="dot"></span>扫描中${w.phase?` · ${esc(w.phase)}`:""}`; }
+    else { pill.className="pill idle"; pill.textContent=(w.phase&&w.phase!=="空闲")?("✓ "+esc(w.phase)):"✓ 空闲"; }
+  }
+  const meta=document.getElementById("ph-"+win);
+  if(meta) meta.innerHTML=`${w.count||0} 条 · 上次 ${w.last?w.last.slice(11,19):'—'}${w.interval?` · 间隔 ${w.interval}s`:''}`;
+  const pb=document.getElementById("pause-"+win); if(pb) pb.textContent=w.enabled?"⏸ 暂停":"▶ 开启";
+}
+
+// ---------- controls ----------
+function toggleWin(win){ const en=!(STATUS[win]||{}).enabled; fetch("/api/window/"+win+"/toggle",{method:"POST",headers:H,body:JSON.stringify({enabled:en})}).then(refreshStatus); }
+function unwatch(ca){ fetch("/api/watch/"+ca,{method:"DELETE"}).then(tick); }
+function setFreq(ca,v){ fetch("/api/watch/"+ca+"/interval",{method:"POST",headers:H,body:JSON.stringify({interval:+v||60})}).then(()=>toast("频率 "+(+v||60)+"s")); }
+function setConc(v){ v=Math.max(1,Math.min(100,+v||10)); fetch("/api/config",{method:"POST",headers:H,body:JSON.stringify({concurrency:v})}).then(()=>toast("并发 "+v)); }
+function setRdir(v){ if(!v)return; fetch("/api/config",{method:"POST",headers:H,body:JSON.stringify({report_dir:v})}).then(()=>toast("报告目录已设")); }
+function setLang(v){ fetch("/api/config",{method:"POST",headers:H,body:JSON.stringify({lang:v})}).then(()=>toast("分析语言: "+(v==="zh"?"中文":"English"))); }
+function setEngine(v){ fetch("/api/config",{method:"POST",headers:H,body:JSON.stringify({engine:v})}).then(()=>toast("分析引擎: "+(v==="codex"?"Codex":"Claude Code"))); }
+function setIval(win,v){ fetch("/api/window/"+win+"/interval",{method:"POST",headers:H,body:JSON.stringify({interval:+v||5})}).then(()=>toast(MARK[win]+" 间隔 "+(+v||5)+"s")); }
+function togglePlat(name,en){ fetch("/api/platform/toggle",{method:"POST",headers:H,body:JSON.stringify({name,enabled:en})}).then(()=>toast(name+(en?" 已启用":" 已停用"))); }
+function analyze(ca){ ANA[ca]={status:"started",step:"启动…"}; drawPanel("w3");
+  fetch("/api/analyze",{method:"POST",headers:H,body:JSON.stringify({ca})}).then(()=>{toast("深度分析已启动 "+short(ca));pollAna(ca);}); }
+function pollAna(ca){ fetch("/api/analyze/"+ca).then(r=>r.json()).then(j=>{ANA[ca]=j; drawPanel("w3"); if(ANA_RUN.includes(j.status)) setTimeout(()=>pollAna(ca),3000); else if(j.status==="done") toast("✅ 报告已生成 "+short(ca));}).catch(()=>{}); }
+let toastT; function toast(m){ const e=document.getElementById("toast"); e.textContent=m; e.classList.add("on"); clearTimeout(toastT); toastT=setTimeout(()=>e.classList.remove("on"),2500); }
+
+function switchTab(t){ tab=t;
+  TABS.concat("admin").forEach(x=>{ const b=document.getElementById("tab-"+x); if(b)b.className="tabbtn"+(x===t?" on":"");
+    const v=document.getElementById("view-"+x); if(v)v.hidden=(x!==t); });
+  if(t==="admin") renderAdmin(); else tick(); }
+
+function renderAdmin(){ const st=STATUS; if(!st.w1) return;
+  const el=document.getElementById("view-admin");
+  const winRow=(w,label)=>`<div class="row"><span class="lbl">${label}</span><span>${st[w].interval!=null?`<input class="in freq" value="${st[w].interval}" onchange="setIval('${w}',this.value)">s `:''}<button class="${st[w].enabled?'':'off'}" onclick="toggleWin('${w}')">${st[w].enabled?'监控中':'已暂停'}</button></span></div>`;
+  el.innerHTML=`
+    <div class="card"><h3>全局</h3>
+      <div class="row"><span class="lbl">并发请求数 (1-100)</span><input class="in freq" value="${st.concurrency||10}" onchange="setConc(this.value)"></div>
+      <div class="row"><span class="lbl">报告输出目录</span><input class="in wide" value="${esc(st.report_dir||'')}" onchange="setRdir(this.value)"></div>
+      <div class="row"><span class="lbl">分析报告语言</span><select class="in" onchange="setLang(this.value)"><option value="zh"${st.lang==='zh'?' selected':''}>中文</option><option value="en"${st.lang==='en'?' selected':''}>English</option></select></div>
+      <div class="row"><span class="lbl">🔬 深度分析引擎</span><select class="in" onchange="setEngine(this.value)"><option value="claude"${st.engine==='claude'?' selected':''}>Claude Code</option><option value="codex"${st.engine==='codex'?' selected':''}>Codex</option></select></div>
+    </div>
+    <div class="card"><h3>窗口 · 扫描间隔 / 开关</h3>
+      ${winRow('w1','① 新发射实时')}
+      ${winRow('w2','② Top100 热门')}
+      ${winRow('w4','④ 3天内新币')}
+      ${winRow('w3','③ 收藏监控')}
+    </div>
+    <div class="card"><h3>① 新发射 · 平台工厂</h3>
+      ${(st.platforms||[]).map(p=>`<label class="chk"><input type="checkbox" ${p.enabled?'checked':''} onchange="togglePlat('${esc(p.name)}',this.checked)"> ${esc(p.name)}</label>`).join("")}
+    </div>
+    <div class="card"><h3>运行状态</h3>
+      <div class="row"><span class="lbl">最新区块</span><b>${st.latest_block||'—'}</b></div>
+      <div class="row"><span class="lbl">API 调用总数</span><b>${st.api_calls}</b></div>
+      <div class="row"><span class="lbl">钱包画像缓存</span><b>${st.wallet_cache}</b></div>
+      <div class="row"><span class="lbl">①/②/③/④ 条数</span><b>${st.w1.count} / ${st.w2.count} / ${st.w3.count} / ${st.w4.count}</b></div>
+      ${(st.errors&&st.errors.length)?('<div class="row"><span class="lbl">最近错误</span></div>'+st.errors.slice().reverse().slice(0,6).map(e=>`<div class="dim" style="font-size:11px;padding:2px 0">${(e.t||'').slice(11,19)} ${esc(e.msg)}</div>`).join('')):'<div class="row"><span class="lbl">最近错误</span><span class="pos">无</span></div>'}
+    </div>`;
+}
+
+// ---------- polling ----------
+async function refreshStatus(){ if(document.hidden) return; try{ STATUS=await fetch("/api/status").then(r=>r.json());
+  document.getElementById("s-block").innerHTML="block <b>"+(STATUS.latest_block||"—")+"</b>";
+  document.getElementById("s-tok").innerHTML="tokens <b>"+((STATUS.w1?.count||0)+(STATUS.w2?.count||0))+"</b>";
+  document.getElementById("s-api").innerHTML="API <b>"+STATUS.api_calls+"</b>";
+  const running=TABS.filter(w=>STATUS[w]&&STATUS[w].running).map(w=>MARK[w]);
+  document.getElementById("s-act").innerHTML=running.length?`<span class="pos">⏳ 扫描中 ${running.join(" ")}</span>`:`<span class="dim">· 空闲</span>`;
+  document.getElementById("s-err").textContent=STATUS.error?("⚠ "+STATUS.error):"";
+  TABS.forEach(updatePanelHeader);
+  if(tab==="admin" && !document.getElementById("view-admin").contains(document.activeElement)) renderAdmin();
+}catch(e){} }
+async function tick(){ if(!TABS.includes(tab)||document.hidden) return; try{
+  const data=await fetch("/api/"+tab).then(r=>r.json()); DATA[tab]=data;
+  if(tab==="w3") data.forEach(t=>{ if(!(t.ca in ANA)) fetch("/api/analyze/"+t.ca).then(r=>r.json()).then(j=>{ANA[t.ca]=j;drawPanel("w3");}).catch(()=>{}); });
+  drawPanel(tab);
+}catch(e){} }
+
+TABS.forEach(renderHead);
+refreshStatus(); tick();
+setInterval(tick,5000); setInterval(refreshStatus,3000);
+document.addEventListener("visibilitychange",()=>{ if(!document.hidden){ refreshStatus(); tick(); } });
+</script>
+</body>
+</html>
