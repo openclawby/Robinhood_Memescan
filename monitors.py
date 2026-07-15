@@ -11,8 +11,10 @@ import asyncio
 import time
 from collections import defaultdict
 
+import analyze
 import clawby
 import sources
+import tg
 import util
 import wallets
 from factories import PLATFORMS, decode_token
@@ -31,6 +33,10 @@ W3_HOLDER_SAMPLE = 30
 W4_POOL = 200          # volume-ranked candidates to inspect for the "created <=3d" window
 W4_LIMIT = 100         # top-N (by volume) among the recent ones to display
 W4_MAX_AGE = 3 * 86400  # 3 days
+W5_INTERVAL = 600      # candidate-list refresh cadence (10 min)
+W5_MCAP_MIN = 100_000
+W5_MCAP_MAX = 5_000_000
+W5_POOL = 120          # how many $100k-$5M coins to keep in the scoring queue
 TX_CHAINS = ["robinhood", "eth", "bsc", "base"]   # via Clawby RPC; hyperevm separate
 SEL_NAME = "0x06fdde03"
 SEL_SYMBOL = "0x95d89b41"
@@ -42,6 +48,35 @@ W2 = {"enabled": True, "interval": W2_INTERVAL, "tokens": {}, "rank": [], "last"
 W3 = {"enabled": True, "watch": {}, "last": None, "running": False, "phase": ""}
 W4 = {"enabled": True, "interval": W4_INTERVAL, "tokens": {}, "rank": [], "last": None,
       "running": False, "phase": "", "done": 0, "total": 0}
+W5 = {"enabled": True, "interval": W5_INTERVAL, "tokens": {}, "rank": [], "last": None,
+      "running": False, "phase": "", "scoring": None}
+
+# Per-window scannable-field toggles (admin-customizable). Disabling a field skips its
+# fetch (saves quota + time) and hides its column. Fields that arrive free on the
+# ranking row only hide the column.
+SCAN_FIELDS = {
+    "w1": {"kol": True, "txcounts": True},
+    "w2": {"holders": True, "transfers": True, "liquidity": True, "eth": True, "x": True},
+    "w4": {"holders": True, "transfers": True, "liquidity": True, "eth": True, "x": True},
+    "w3": {"kolsmart": True, "liquidity": True, "x": True},
+    "w5": {"tx": True, "holders": True, "x": True, "trading": True, "pools": True},
+}
+
+
+def field_on(win, name):
+    return SCAN_FIELDS.get(win, {}).get(name, True)
+
+
+def set_field(win, name, val):
+    if win in SCAN_FIELDS and name in SCAN_FIELDS[win]:
+        SCAN_FIELDS[win][name] = bool(val)
+        return True
+    return False
+
+
+def fields_state():
+    return SCAN_FIELDS
+
 
 LAST_BLOCK = {}
 TS_CACHE = util.Capped(10000)      # block -> unix ts (size-capped)
@@ -187,14 +222,16 @@ async def _w1_add(ca, platform, log):
 async def _w1_enrich_one(t):
     cr = t["creator"].lower()
     if cr not in CREATOR_CACHE:
-        res = await asyncio.gather(
-            wallets.classify(cr),
-            *[clawby.tx_count(cr, ch) for ch in TX_CHAINS],
-            sources.hyperevm_tx_count(cr),
-        )
-        prof, rest = res[0], res[1:]
-        tx = {ch: rest[i] for i, ch in enumerate(TX_CHAINS)}
-        tx["hyperevm"] = rest[-1]
+        jobs = []                                          # skip disabled fetches
+        if field_on("w1", "kol"):
+            jobs.append(("kol", wallets.classify(cr)))
+        if field_on("w1", "txcounts"):
+            jobs += [("tx_" + ch, clawby.tx_count(cr, ch)) for ch in TX_CHAINS]
+            jobs.append(("tx_hyperevm", sources.hyperevm_tx_count(cr)))
+        rd = dict(zip([j[0] for j in jobs], await asyncio.gather(*[j[1] for j in jobs]))) if jobs else {}
+        prof = rd.get("kol") or {}
+        tx = {ch: rd.get("tx_" + ch) for ch in TX_CHAINS}
+        tx["hyperevm"] = rd.get("tx_hyperevm")
         CREATOR_CACHE[cr] = {"is_kol": prof.get("is_kol"), "twitter": prof.get("twitter"), "tx": tx}
     c = CREATOR_CACHE[cr]
     t["creator_is_kol"] = c["is_kol"]
@@ -222,20 +259,27 @@ def _w1_prune():
 
 
 # ============================ shared market enrichment (W2 + W4) ============================
-async def _enrich_market(t):
-    """price/mcap/vol/holders/transfers/liquidity/creation/platform already arrive
-    on the dex_trending row — here we only add pool-ETH (dexscreener) + X mentions."""
-    dl, xc = await asyncio.gather(_dex_liq(t["ca"]), _x_count(t["ca"]))
-    liq, eth, pools = dl
-    if t.get("liquidity") is None:
-        t["liquidity"] = liq
-    t["eth_in_pools"], t["pools"] = eth, pools
-    t["x_ca"] = xc
+async def _enrich_market(t, winname):
+    """price/mcap/vol/holders/transfers/creation/platform already arrive on the row;
+    here we add pool-ETH (dexscreener) + X mentions — skipping either if its field is off."""
+    jobs = {}
+    if field_on(winname, "liquidity") or field_on(winname, "eth"):
+        jobs["liq"] = _dex_liq(t["ca"])
+    if field_on(winname, "x"):
+        jobs["x"] = _x_count(t["ca"])
+    res = dict(zip(jobs.keys(), await asyncio.gather(*jobs.values()))) if jobs else {}
+    if "liq" in res:
+        liq, eth, pools = res["liq"]
+        if t.get("liquidity") is None:
+            t["liquidity"] = liq
+        t["eth_in_pools"], t["pools"] = eth, pools
+    if "x" in res:
+        t["x_ca"] = res["x"]
 
 
-async def _enrich_prog(win, t, label):
+async def _enrich_prog(win, winname, t, label):
     """Enrich one token and tick the window's progress phase for UI feedback."""
-    await _enrich_market(t)
+    await _enrich_market(t, winname)
     win["done"] += 1
     win["phase"] = "%s %d/%d" % (label, win["done"], win["total"])
 
@@ -267,7 +311,7 @@ async def w2_refresh():
         W2["last"] = now()
         W2["total"], W2["done"] = len(W2["rank"]), 0
         W2["phase"] = "补全指标 0/%d" % W2["total"]
-        await asyncio.gather(*[_enrich_prog(W2, W2["tokens"][ca], "补全指标") for ca in W2["rank"]])
+        await asyncio.gather(*[_enrich_prog(W2, "w2", W2["tokens"][ca], "补全指标") for ca in W2["rank"]])
         W2["last"] = now()
         W2["phase"] = "完成 · %d 个" % len(W2["rank"])
     finally:
@@ -328,11 +372,83 @@ async def w4_refresh():
         W4["last"] = now()
         W4["total"], W4["done"] = len(top), 0
         W4["phase"] = "补全指标 0/%d" % max(1, len(top))
-        await asyncio.gather(*[_enrich_prog(W4, W4["tokens"][ca], "补全指标") for ca in W4["rank"]])
+        await asyncio.gather(*[_enrich_prog(W4, "w4", W4["tokens"][ca], "补全指标") for ca in W4["rank"]])
         W4["last"] = now()
         W4["phase"] = "完成 · %d 个3天内新币" % len(top)
     finally:
         W4["running"] = False
+
+
+# ============================ W5 : AI scoring (mcap $100k-$5M) ============================
+async def w5_refresh():
+    """Refresh the candidate list (mcap band) + basic fields; keep existing scores."""
+    if W5["running"]:
+        return
+    W5["running"] = True
+    W5["phase"] = "拉取候选(市值 $100k-$5M)"
+    try:
+        pool = await sources.rh_by_mcap(W5_MCAP_MIN, W5_MCAP_MAX, W5_POOL)
+        if not pool:
+            util.logerr("w5: mcap band empty")
+            W5["phase"] = "候选为空，稍后重试"
+            return
+        keep = set()
+        for t in pool:
+            keep.add(t["ca"])
+            m = W5["tokens"].get(t["ca"], {})
+            for k in ("ca", "symbol", "name", "icon", "platform", "mcap", "price", "volume24", "holders", "created_ts"):
+                m[k] = t.get(k)
+            for k, dv in (("score", None), ("rationale", None), ("scored_at", None),
+                          ("scoring", False), ("error", None)):
+                m.setdefault(k, dv)
+            W5["tokens"][t["ca"]] = m
+        for ca in list(W5["tokens"].keys()):               # drop coins that left the band
+            if ca not in keep:
+                W5["tokens"].pop(ca, None)
+        W5["rank"] = [t["ca"] for t in pool]               # default order: mcap desc
+        W5["last"] = now()
+        W5["phase"] = "候选 %d 个 · 滚动评分中" % len(pool)
+    finally:
+        W5["running"] = False
+
+
+def _w5_next():
+    """The candidate most in need of a score: never-scored first, then oldest."""
+    best, bkey = None, None
+    for ca, m in W5["tokens"].items():
+        if m.get("scoring"):
+            continue
+        key = (0, 0.0) if m.get("scored_at") is None else (1, m["scored_at"])
+        if best is None or key < bkey:
+            best, bkey = ca, key
+    return best
+
+
+async def w5_score_next():
+    """Score ONE candidate (sequential rolling worker). Returns True if it ran."""
+    ca = _w5_next()
+    if not ca:
+        return False
+    m = W5["tokens"].get(ca)
+    if not m:
+        return False
+    m["scoring"] = True
+    W5["scoring"] = ca
+    W5["phase"] = "评分中 %s" % (m.get("symbol") or ca[:8])
+    try:
+        res = await analyze.score_token(ca, dict(SCAN_FIELDS["w5"]))
+        if res:
+            m["score"], m["rationale"], m["error"] = res["score"], res["rationale"], None
+            await tg.notify_score(m)                  # Telegram alert if score >= threshold
+        else:
+            m["error"] = "评分失败(未产出)"
+    except Exception as e:  # noqa: BLE001
+        m["error"] = str(e)
+    finally:
+        m["scored_at"] = time.time()
+        m["scoring"] = False
+        W5["scoring"] = None
+    return True
 
 
 # ============================ W3 : watchlist ============================
@@ -363,8 +479,17 @@ async def _w3_safe(ca, w):
 
 
 async def _w3_refresh_one(ca, w):
-    info, (liq, eth, pools), holders, xc = await asyncio.gather(
-        sources.rh_token(ca), _dex_liq(ca), sources.rh_holders(ca, W3_HOLDER_SAMPLE), _x_count(ca))
+    jobs = {"info": sources.rh_token(ca)}                   # skip disabled fetches
+    if field_on("w3", "liquidity"):
+        jobs["liq"] = _dex_liq(ca)
+    if field_on("w3", "kolsmart"):
+        jobs["holders"] = sources.rh_holders(ca, W3_HOLDER_SAMPLE)
+    if field_on("w3", "x"):
+        jobs["x"] = _x_count(ca)
+    res = dict(zip(jobs.keys(), await asyncio.gather(*jobs.values())))
+    info = res.get("info") or {}
+    liq, eth, pools = res.get("liq") or (None, None, None)
+    holders = res.get("holders") or []
     if not w.get("symbol") and info.get("symbol"):
         w["symbol"] = info.get("symbol")
     if not w.get("icon") and info.get("icon"):
@@ -375,14 +500,26 @@ async def _w3_refresh_one(ca, w):
         "transfers": info.get("transfers"), "platform": info.get("platform"),
         "liquidity": info.get("liquidity") if info.get("liquidity") is not None else liq,
         "eth_in_pools": eth, "kol": counts["kol"], "smart": counts["smart"],
-        "kol_handles": counts["kol_handles"], "x_ca": xc,
+        "kol_handles": counts["kol_handles"], "x_ca": res.get("x"),
         "holders": info.get("holders"), "sampled": len(holders), "updated": now(),
     }
 
 
 # ============================ controls ============================
+ALL_WINDOWS = ("w1", "w2", "w3", "w4", "w5")
+MAX_ACTIVE = 2                                         # at most 2 windows may monitor at once
+
+
+def _wmap():
+    return {"w1": W1, "w2": W2, "w3": W3, "w4": W4, "w5": W5}
+
+
+def enabled_count():
+    return sum(1 for w in _wmap().values() if w["enabled"])
+
+
 def set_enabled(win, val):
-    w = {"w1": W1, "w2": W2, "w3": W3, "w4": W4}.get(win)
+    w = _wmap().get(win)
     if w is not None:
         w["enabled"] = bool(val)
         return True
@@ -404,8 +541,8 @@ def platforms_state():
 
 
 def set_interval(win, seconds):
-    floors = {"w1": 2, "w2": 15, "w4": 30}
-    w = {"w1": W1, "w2": W2, "w4": W4}.get(win)
+    floors = {"w1": 2, "w2": 15, "w4": 30, "w5": 60}
+    w = {"w1": W1, "w2": W2, "w4": W4, "w5": W5}.get(win)
     if w is not None:
         w["interval"] = max(floors[win], int(seconds))
         return True
@@ -486,3 +623,26 @@ async def w4_loop():
             STATUS["error"] = "w4: %s" % e
         # self-heal like W2: retry soon while still empty, else honour the interval
         await asyncio.sleep(15 if not W4["rank"] else max(30, W4["interval"]))
+
+
+async def w5_loop():
+    await asyncio.sleep(20)                        # candidate-list refresh (every ~10 min)
+    while True:
+        try:
+            if W5["enabled"]:
+                await w5_refresh()
+        except Exception as e:  # noqa: BLE001
+            STATUS["error"] = "w5: %s" % e
+        await asyncio.sleep(15 if not W5["rank"] else max(60, W5["interval"]))
+
+
+async def w5_score_loop():
+    await asyncio.sleep(35)                        # rolling sequential AI scorer (one coin at a time)
+    while True:
+        did = False
+        try:
+            if W5["enabled"] and W5["tokens"] and not clawby.banned_for():   # skip scoring during a cooldown
+                did = await w5_score_next()
+        except Exception as e:  # noqa: BLE001
+            STATUS["error"] = "w5score: %s" % e
+        await asyncio.sleep(3 if did else 12)

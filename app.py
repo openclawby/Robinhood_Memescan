@@ -9,6 +9,7 @@ from fastapi.responses import FileResponse, JSONResponse
 import analyze
 import clawby
 import monitors as M
+import tg
 import util
 import wallets
 
@@ -23,11 +24,20 @@ def collect_state():
             "lang": analyze.get_lang(),
             "engine": analyze.get_engine(),
             "report_dir": analyze.get_report_dir(),
-            "w1_interval": M.W1["interval"], "w2_interval": M.W2["interval"], "w4_interval": M.W4["interval"],
-            "w1_enabled": M.W1["enabled"], "w2_enabled": M.W2["enabled"],
-            "w3_enabled": M.W3["enabled"], "w4_enabled": M.W4["enabled"],
+            "w1_interval": M.W1["interval"], "w2_interval": M.W2["interval"],
+            "w4_interval": M.W4["interval"], "w5_interval": M.W5["interval"],
+            "w1_enabled": M.W1["enabled"], "w2_enabled": M.W2["enabled"], "w3_enabled": M.W3["enabled"],
+            "w4_enabled": M.W4["enabled"], "w5_enabled": M.W5["enabled"],
         },
         "platforms": {p["name"]: p.get("enabled", False) for p in M.PLATFORMS},
+        "fields": M.fields_state(),
+        "scores": {ca: {"score": t.get("score"), "rationale": t.get("rationale"),
+                        "scored_at": t.get("scored_at"), "symbol": t.get("symbol"),
+                        "name": t.get("name"), "icon": t.get("icon"), "platform": t.get("platform"),
+                        "mcap": t.get("mcap"), "volume24": t.get("volume24"), "holders": t.get("holders")}
+                   for ca, t in M.W5["tokens"].items() if t.get("score") is not None},
+        "telegram": tg.get_config(),
+        "tg_notified": list(tg.NOTIFIED),
         "watch": {ca: {"interval": w["interval"], "added": w.get("added"),
                        "symbol": w.get("symbol"), "icon": w.get("icon")}
                   for ca, w in M.W3["watch"].items()},
@@ -46,16 +56,28 @@ def apply_state(st):
         analyze.set_engine(cfg["engine"])
     if cfg.get("report_dir"):
         analyze.set_report_dir(cfg["report_dir"])
-    for win in ("w1", "w2", "w4"):
+    for win in ("w1", "w2", "w4", "w5"):
         if win + "_interval" in cfg:
             M.set_interval(win, cfg[win + "_interval"])
-    # windows always boot ENABLED — a monitor should monitor on launch. A persisted
-    # "paused" state is intentionally NOT restored (pause is a runtime-only action);
-    # otherwise an earlier pause would silently keep every window off after a restart.
-    for win in ("w1", "w2", "w3", "w4"):
-        M.set_enabled(win, True)
+    # windows boot PAUSED (avoids an initial concurrency spike) — the user turns on
+    # up to M.MAX_ACTIVE of them. Enabled state is intentionally NOT persisted.
+    for win in M.ALL_WINDOWS:
+        M.set_enabled(win, False)
+    tgc = st.get("telegram") or {}
+    tg.set_config(token=tgc.get("token"), chat_id=tgc.get("chat_id"),
+                  threshold=tgc.get("threshold"), enabled=tgc.get("enabled"))
+    tg.NOTIFIED.update(st.get("tg_notified") or [])
     for name, en in (st.get("platforms") or {}).items():
         M.set_platform_enabled(name, en)
+    for win, fs in (st.get("fields") or {}).items():
+        for name, val in (fs or {}).items():
+            M.set_field(win, name, val)
+    for ca, s in (st.get("scores") or {}).items():
+        M.W5["tokens"][ca.lower()] = {
+            "ca": ca.lower(), "symbol": s.get("symbol"), "name": s.get("name"), "icon": s.get("icon"),
+            "platform": s.get("platform"), "mcap": s.get("mcap"), "volume24": s.get("volume24"),
+            "holders": s.get("holders"), "score": s.get("score"), "rationale": s.get("rationale"),
+            "scored_at": s.get("scored_at"), "scoring": False, "error": None}
     for ca, w in (st.get("watch") or {}).items():
         M.W3["watch"][ca.lower()] = {"interval": max(10, int(w.get("interval", 60))), "next_due": 0.0,
                                      "data": {}, "added": w.get("added") or M.now(),
@@ -81,6 +103,7 @@ async def lifespan(_app):
     apply_state(util.load_state())
     tasks = [asyncio.create_task(M.w1_loop()), asyncio.create_task(M.w2_loop()),
              asyncio.create_task(M.w3_loop()), asyncio.create_task(M.w4_loop()),
+             asyncio.create_task(M.w5_loop()), asyncio.create_task(M.w5_score_loop()),
              asyncio.create_task(_save_loop())]
     try:
         yield
@@ -116,6 +139,23 @@ async def api_w4():
     return JSONResponse([M.W4["tokens"][ca] for ca in M.W4["rank"] if ca in M.W4["tokens"]])
 
 
+@app.get("/api/w5")
+async def api_w5():
+    toks = M.W5["tokens"]
+    order = M.W5["rank"] or list(toks.keys())          # fall back to all tokens if candidates not fetched yet
+    seen = set()
+    rows = []
+    for ca in order:
+        if ca in toks and ca not in seen:
+            seen.add(ca)
+            rows.append(toks[ca])
+    for ca, tkn in toks.items():                        # include scored tokens not in the rank list
+        if ca not in seen:
+            rows.append(tkn)
+    rows.sort(key=lambda t: (t.get("score") is None, -(t.get("score") or 0)))  # scored first, high→low
+    return JSONResponse(rows)
+
+
 @app.get("/api/w3")
 async def api_w3():
     out = []
@@ -139,6 +179,9 @@ async def api_status():
         "report_dir": analyze.get_report_dir(),
         "lang": analyze.get_lang(),
         "engine": analyze.get_engine(),
+        "max_active": M.MAX_ACTIVE,
+        "rate_banned": clawby.banned_for(),
+        "telegram": tg.public_config(),
         "platforms": M.platforms_state(),
         "w1": {"enabled": M.W1["enabled"], "count": len(M.W1["tokens"]), "last": M.W1["last"],
                "interval": M.W1["interval"], "running": M.W1["running"], "phase": M.W1["phase"]},
@@ -150,6 +193,12 @@ async def api_status():
         "w4": {"enabled": M.W4["enabled"], "count": len(M.W4["rank"]), "last": M.W4["last"],
                "interval": M.W4["interval"], "running": M.W4["running"], "phase": M.W4["phase"],
                "done": M.W4["done"], "total": M.W4["total"]},
+        "w5": {"enabled": M.W5["enabled"], "count": len(M.W5["rank"]), "last": M.W5["last"],
+               "interval": M.W5["interval"], "running": M.W5["running"], "phase": M.W5["phase"],
+               "scoring": M.W5["scoring"], "pool": len(M.W5["tokens"]),
+               "scoring_sym": (M.W5["tokens"].get(M.W5["scoring"]) or {}).get("symbol") if M.W5["scoring"] else None,
+               "scored": sum(1 for t in M.W5["tokens"].values() if t.get("score") is not None)},
+        "fields": M.fields_state(),
     }
 
 
@@ -157,9 +206,13 @@ async def api_status():
 @app.post("/api/window/{name}/toggle")
 async def api_toggle(name: str, req: Request):
     body = await req.json()
-    ok = M.set_enabled(name, body.get("enabled", True))
+    want = bool(body.get("enabled", True))
+    w = M._wmap().get(name)
+    if want and w is not None and not w["enabled"] and M.enabled_count() >= M.MAX_ACTIVE:
+        return {"ok": False, "reason": "limit", "limit": M.MAX_ACTIVE}
+    ok = M.set_enabled(name, want)
     _save()
-    return {"ok": ok, "enabled": body.get("enabled")}
+    return {"ok": ok, "enabled": want}
 
 
 @app.post("/api/window/{name}/interval")
@@ -193,6 +246,35 @@ async def api_platform_toggle(req: Request):
     ok = M.set_platform_enabled(body.get("name"), body.get("enabled", True))
     _save()
     return {"ok": ok}
+
+
+@app.post("/api/field/toggle")
+async def api_field_toggle(req: Request):
+    body = await req.json()
+    ok = M.set_field(body.get("win"), body.get("name"), body.get("enabled", True))
+    _save()
+    return {"ok": ok}
+
+
+# ---------------- Telegram alerts ----------------
+@app.post("/api/tg/config")
+async def api_tg_config(req: Request):
+    body = await req.json()
+    tg.set_config(token=body.get("token"), chat_id=body.get("chat_id"),
+                  threshold=body.get("threshold"), enabled=body.get("enabled"))
+    _save()
+    return {"ok": True, "telegram": tg.public_config()}
+
+
+@app.post("/api/tg/test")
+async def api_tg_test():
+    ok, msg = await tg.send("✅ Clawby Memescan — 测试通知 / test alert. 配置成功。")
+    return {"ok": ok, "msg": msg}
+
+
+@app.get("/api/tg/chats")
+async def api_tg_chats():
+    return {"chats": await tg.get_chats()}
 
 
 # ---------------- watchlist ----------------

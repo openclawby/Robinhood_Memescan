@@ -6,6 +6,8 @@ and a wallet KOL/smart-money tag lookup (dex_wallet_stats.common).
 """
 import asyncio
 import os
+import re
+import time
 
 import httpx
 
@@ -17,6 +19,12 @@ DEFAULT_CHAIN = "robinhood"
 
 MAX_LOG_RANGE = 3000
 _calls = 0
+_ban_until = 0.0        # unix ts until which upstream has rate-limit-banned us (back off)
+_ban_streak = 0         # consecutive bans → escalate the cooldown until it clears
+
+
+def banned_for():
+    return max(0, int(_ban_until - time.time()))
 
 # Concurrency: how many requests may be in flight at once (adjustable from the UI).
 CONCURRENCY = 10
@@ -56,20 +64,42 @@ def call_count():
     return _calls
 
 
+def _note_ban(text):
+    """An upstream rate-limit ban (429 RATE_LIMIT_BANNED). The ban is ROLLING —
+    reset_at keeps sliding forward while we keep hitting it — so enforce a real
+    fixed cooldown (no Clawby calls) to let the window actually clear."""
+    global _ban_until, _ban_streak
+    _ban_streak += 1
+    cool = time.time() + min(90 * _ban_streak, 600)      # escalate 90s→180s→…→10min until it clears
+    m = re.search(r'reset_at"?\s*:?\s*"?(\d{10})', text or "")
+    if m:
+        cool = max(cool, float(m.group(1)) + 10)
+    _ban_until = max(_ban_until, cool)
+
+
 async def _post(path, body, retries=4):
-    global _calls
+    global _calls, _ban_streak
     last_err = None
     for attempt in range(retries):
+        if _ban_until - time.time() > 0:                 # in a cooldown → do NOT hit upstream at all
+            return {"__error__": "rate_banned"}          # (hammering while banned only extends it)
         try:
             await _limiter.acquire()
             async with _sem:
                 _calls += 1
                 r = await _http().post(BASE + path, json=body)
+            txt = r.text
+            # An upstream rate-limit ban arrives with the marker in the BODY regardless
+            # of the HTTP status (seen as 200, 429, AND 502) — detect it by body, not code.
+            if "RATE_LIMIT_BANNED" in txt or "temporarily banned" in txt:
+                _note_ban(txt)                           # cool down + stop (hammering only extends it)
+                return {"__error__": "rate_banned"}
             if r.status_code == 200:
+                _ban_streak = 0                          # a clean success clears the escalation
                 return r.json()
             if r.status_code in (429, 405, 500, 502, 503, 504):
                 last_err = "HTTP %s" % r.status_code
-                await asyncio.sleep(0.4 * (2 ** attempt))
+                await asyncio.sleep(0.5 * (2 ** attempt))
                 continue
             return {"__error__": "HTTP %s" % r.status_code}
         except (httpx.TimeoutException, httpx.TransportError) as e:

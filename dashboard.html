@@ -37,6 +37,13 @@
   tbody tr:hover { background:#161d2b; }
   tbody tr td { transition:background .3s; }
   .mono { font-family:ui-monospace,Menlo,monospace; font-size:12px; }
+  td.wrap, th.wrap { white-space:normal; min-width:240px; max-width:460px; line-height:1.4; }
+  .score { font-size:15px; font-weight:800; } .score small { font-size:11px; color:var(--dim); font-weight:400; }
+  .prog { display:flex; align-items:center; gap:10px; padding:7px 14px; background:#0f131b; border-bottom:1px solid var(--border); font-size:12px; }
+  .prog .track { flex:1; height:7px; background:#1a2030; border-radius:4px; overflow:hidden; }
+  .prog .fill { height:100%; width:0; background:linear-gradient(90deg,var(--accent),var(--green)); transition:width .5s; }
+  .prog .lbl { white-space:nowrap; color:var(--dim); }
+  tbody tr.scoring-row { background:#12341c !important; box-shadow:inset 3px 0 0 var(--green); }
   a { color:var(--accent); text-decoration:none; } a:hover { text-decoration:underline; }
   .badge { display:inline-block; padding:1px 8px; border-radius:10px; font-size:11px; font-weight:600; }
   .dim { color:var(--dim); } .empty { color:#39414f; } .sym { font-weight:600; } .nm { color:var(--dim); font-size:11px; }
@@ -60,6 +67,12 @@
   label.chk { display:flex; align-items:center; gap:8px; padding:5px 0; cursor:pointer; }
   #toast { position:fixed; bottom:18px; right:18px; background:var(--panel); border:1px solid var(--accent); padding:9px 15px; border-radius:9px; opacity:0; transition:opacity .3s; z-index:99; }
   #toast.on { opacity:1; }
+  .modal-bg { position:fixed; inset:0; background:#000a; backdrop-filter:blur(2px); z-index:200; display:flex; align-items:center; justify-content:center; }
+  .modal-bg[hidden] { display:none; }   /* the [hidden] attr alone is overridden by display:flex */
+  .modal { background:var(--panel); border:1px solid var(--border); border-radius:14px; padding:22px 26px; max-width:460px; box-shadow:0 12px 48px #000c; }
+  .modal h2,.modal h3 { margin:0 0 10px; } .modal p { color:var(--dim); margin:6px 0; }
+  .modal .x { float:right; cursor:pointer; color:var(--dim); font-size:18px; margin:-6px -8px 0 0; }
+  .bigbtn { padding:10px 22px; font-size:14px; }
 </style>
 </head>
 <body>
@@ -75,6 +88,7 @@
   <button class="tabbtn" id="tab-w2" onclick="switchTab('w2')">② Top100</button>
   <button class="tabbtn" id="tab-w3" onclick="switchTab('w3')">③ 收藏</button>
   <button class="tabbtn" id="tab-w4" onclick="switchTab('w4')">④ 3天新币</button>
+  <button class="tabbtn" id="tab-w5" onclick="switchTab('w5')">⑤ AI评分</button>
   <button class="tabbtn" id="tab-admin" onclick="switchTab('admin')">⚙️ 管理</button>
 </header>
 
@@ -94,13 +108,65 @@
   <div class="panel"><div class="phead"><span class="t">④ 3天内新币 · Top100 按交易量</span><span class="pill" id="pill-w4">—</span><span class="grow"></span><span class="meta" id="ph-w4"></span><button class="ghost sm" id="pause-w4" onclick="toggleWin('w4')"></button></div>
   <div class="pbody"><table><thead><tr id="head-w4"></tr></thead><tbody id="body-w4"></tbody></table></div></div>
 </div>
+<div class="view" id="view-w5" hidden>
+  <div class="panel"><div class="phead"><span class="t">⑤ AI 评分 · 市值 $100k–$5M</span><span class="pill" id="pill-w5">—</span><span class="grow"></span><span class="meta" id="ph-w5"></span><button class="ghost sm" id="pause-w5" onclick="toggleWin('w5')"></button></div>
+  <div class="prog" id="prog-w5"><div class="track"><div class="fill"></div></div><span class="lbl"></span></div>
+  <div class="pbody"><table><thead><tr id="head-w5"></tr></thead><tbody id="body-w5"></tbody></table></div></div>
+</div>
 <div class="view" id="view-admin" hidden></div>
 <div id="toast"></div>
+<div id="modal" class="modal-bg" hidden><div class="modal"><span class="x" onclick="closeModal()">✕</span><div id="modal-body"></div></div></div>
+<div id="lang-modal" class="modal-bg" hidden><div class="modal" style="text-align:center;min-width:300px">
+  <div style="font-size:36px">🦬</div><h2 style="margin:6px 0">Robinhood Memescan</h2>
+  <p>选择语言 · Choose language</p>
+  <div style="display:flex;gap:12px;justify-content:center;margin-top:16px">
+    <button class="bigbtn" onclick="chooseLang('zh')">🇨🇳 中文</button>
+    <button class="bigbtn ghost" onclick="chooseLang('en')">🇬🇧 English</button>
+  </div></div></div>
 
 <script>
 const EXP="https://robinhoodchain.blockscout.com";
-const TABS=["w1","w2","w3","w4"];
-const MARK={w1:"①",w2:"②",w3:"③",w4:"④"};
+const TABS=["w1","w2","w3","w4","w5"];
+const MARK={w1:"①",w2:"②",w3:"③",w4:"④",w5:"⑤"};
+const FLAB={kol:"创建者KOL",txcounts:"多链笔数",holders:"holders",transfers:"交易数",liquidity:"流动性",eth:"池ETH",x:"X舆情",kolsmart:"KOL/聪明钱",tx:"链上tx",trading:"交易记录",pools:"池子"};
+const WLAB={w1:"① 新发射",w2:"② Top100",w3:"③ 收藏",w4:"④ 3天新币",w5:"⑤ AI评分·采集项"};
+// ---------- i18n (key = Chinese; value = English) ----------
+let LANG=localStorage.getItem("ui_lang");
+const I18N={
+ "① 新发射":"① New","② Top100":"② Top100","③ 收藏":"③ Watchlist","④ 3天新币":"④ New ≤3d","⑤ AI评分":"⑤ AI Score","⚙️ 管理":"⚙️ Admin",
+ "① 新发射实时":"① Live New Launches","② Top100 meme · 按24h交易量":"② Top100 memes · by 24h volume","③ 收藏 · 深度分析":"③ Watchlist · Deep Analysis","④ 3天内新币 · Top100 按交易量":"④ New ≤3d · Top100 by volume","⑤ AI 评分 · 市值 $100k–$5M":"⑤ AI Score · mcap $100k–$5M",
+ "平台":"Platform","名称":"Name","创建时间":"Created","创建者":"Creator","是否KOL":"KOL?","rh笔":"RH tx","ETH笔":"ETH tx","BSC笔":"BSC tx","BASE笔":"BASE tx","hyperEVM笔":"hyperEVM tx","价格":"Price","市值":"Mcap","24h量":"24h vol","交易数":"Txns","流动性":"Liquidity","池ETH":"Pool ETH","X舆情":"X buzz","符号":"Symbol","频率":"Interval","KOL数":"KOLs","聪明钱数":"Smart$","更新":"Updated","深度分析":"Analysis","AI评分":"AI Score","评分理由":"Rationale","评分时间":"Scored",
+ "已暂停":"Paused","扫描中":"Scanning","评分中":"Scoring","滚动评分 已评":"Rolling · scored","空闲":"Idle","待评分":"Pending","分析中…":"Analyzing…","评分中":"Scoring","候选":"Candidates","已评":"scored","刷新":"refresh","间隔":"interval","上次":"last","条":"rows",
+ "⏸ 暂停":"⏸ Pause","▶ 开启":"▶ Enable","⏸ 已暂停":"⏸ Paused","监控中":"Monitoring","已暂停":"Paused",
+ "暂无收藏 —— 在 ①/②/④/⑤ 表格点 ★ 添加":"No favorites — click ★ in ①/②/④/⑤ to add","⏳ 加载中…（首屏可能需要 1-2 分钟）":"⏳ Loading… (first load may take 1-2 min)","⏸ 已暂停（在此窗口或⚙️管理开启）":"⏸ Paused (enable here or in ⚙️ Admin)","⏳ 拉取候选中…（市值 $100k–$5M，随后滚动评分）":"⏳ Fetching candidates… (mcap $100k–$5M, then rolling scoring)",
+ "全局":"Global","并发请求数 (1-100)":"Concurrency (1-100)","报告输出目录":"Report output dir","分析报告语言":"Report language","🔬 深度分析引擎":"🔬 Analysis engine","中文":"中文","窗口 · 扫描间隔 / 开关":"Windows · interval / on-off","扫描字段自定义":"Scan-field customization","关掉字段 = 跳过抓取(省配额、更快) + 隐藏该列；⑤为AI评分的数据采集项":"Turn off a field = skip its fetch (saves quota, faster) + hide its column; ⑤ = data collected for AI scoring","① 新发射 · 平台工厂":"① New · launchpad factories","运行状态":"Runtime status","最新区块":"Latest block","API 调用总数":"API calls","钱包画像缓存":"Wallet cache","最近错误":"Recent errors","无":"none","① 新发射实时 ":"① Live New","📲 Telegram 评分提醒":"📲 Telegram score alerts",
+ "① 新发射实时":"① Live New Launches","② Top100 热门":"② Top100","④ 3天内新币":"④ New ≤3d","⑤ AI评分(候选刷新)":"⑤ AI Score (candidate refresh)","③ 收藏监控":"③ Watchlist","⑤ AI评分":"⑤ AI Score",
+ "已复制":"Copied","已收藏":"Added","频率":"Interval","并发":"Concurrency","报告目录已设":"Report dir set","分析语言":"Report language","分析引擎":"Engine","已启用":"enabled","已停用":"disabled","已关闭":"disabled","深度分析已启动":"Analysis started","✅ 报告已生成":"✅ Report ready","启动…":"starting…",
+ "🔬 分析":"🔬 Analyze","📄 报告":"📄 Report","⚠ 失败":"⚠ failed","待评分":"pending","分析中…":"analyzing…",
+ "最多同时监控 2 个窗口":"At most 2 windows can monitor at once","请先暂停一个正在监控的窗口，再开启新的。这样做是为了控制接口并发、保护你的 Clawby 配额。":"Please pause one active window before enabling another. This caps API concurrency and protects your Clawby quota.","知道了":"Got it"
+};
+Object.assign(I18N,{
+ "监控中":"Monitoring","否":"No","重新分析":"Re-analyze","抓链上+X→本地wiki→报告→PDF":"gather on-chain+X → wiki → report → PDF",
+ "启用提醒":"Enable alerts","评分 ≥ 阈值时提醒":"Alert when score ≥","刷新chat_id":"Refresh chat_id","发送测试":"Send test",
+ "Telegram 设置已保存":"Telegram settings saved","发送中…":"Sending…","✅ 测试消息已发送":"✅ Test message sent",
+ "未找到 chat（先在 Telegram 给你的 bot 发一条消息，再点刷新）":"No chat found — message your bot in Telegram first, then Refresh","点击选用: ":"Pick: ",
+ "⑤ AI评分·采集项":"⑤ AI Score · collected","创建者KOL":"Creator KOL","多链笔数":"Multi-chain tx","KOL/聪明钱":"KOL/Smart$","链上tx":"On-chain tx","交易记录":"Trading","池子":"Pools",
+ "扫描中":"Scanning","✓KOL":"✓KOL","收藏":"Favorite","移除":"Remove","监控频率(秒)":"Refresh interval (s)","加入③收藏，监控频率（秒）：":"Add to ③ Watchlist, refresh interval (seconds):",
+ "滚动评分":"Rolling","共":"of","正在评分":"Scoring now","滚动评分中":"Rolling scoring…","⏳ 拉取候选中…（市值 $100k–$5M，随后滚动评分）":"⏳ Fetching candidates… (mcap $100k–$5M, then rolling scoring)","上游限流,剩":"Rate-limited, resets in"});
+function t(s){ return LANG==="en" ? (I18N[s]!==undefined?I18N[s]:s) : s; }
+const PHRASES=[["拉取候选(市值 $100k-$5M)","Fetching candidates (mcap $100k-$5M)"],["候选为空，稍后重试","No candidates, retrying"],["榜单为空，稍后重试","Board empty, retrying"],["个 · 滚动评分中"," · rolling scoring"],["个3天内新币"," coins ≤3d"],["拉取交易量榜单","Fetching volume board"],["补全指标","Enriching"],["校准创建时间","Calibrating age"],["扫描工厂事件","Scanning factory events"],["补全创建者画像","Enriching creators"],["刷新收藏","Refreshing watch"],["评分中","Scoring"],["候选","Candidates "],["筛出","Filtered "],["完成","Done"],["空闲","Idle"],[" 个"," "]];
+function tphase(s){ if(!s||LANG!=="en")return s; for(const[a,b]of PHRASES)s=s.split(a).join(b); return s; }
+function showModal(html){ document.getElementById("modal-body").innerHTML=html; document.getElementById("modal").hidden=false; }
+function closeModal(){ document.getElementById("modal").hidden=true; }
+function limitModal(){ showModal(`<h3>⚠️ ${t("最多同时监控 2 个窗口")}</h3><p>${t("请先暂停一个正在监控的窗口，再开启新的。这样做是为了控制接口并发、保护你的 Clawby 配额。")}</p><div style="text-align:right;margin-top:14px"><button onclick="closeModal()">${t("知道了")}</button></div>`); }
+function applyI18n(){ document.documentElement.lang=LANG||"zh";
+  const nav={"tab-w1":"① 新发射","tab-w2":"② Top100","tab-w3":"③ 收藏","tab-w4":"④ 3天新币","tab-w5":"⑤ AI评分","tab-admin":"⚙️ 管理"};
+  for(const id in nav){ const e=document.getElementById(id); if(e)e.textContent=t(nav[id]); }
+  const ti={"view-w1":"① 新发射实时","view-w2":"② Top100 meme · 按24h交易量","view-w3":"③ 收藏 · 深度分析","view-w4":"④ 3天内新币 · Top100 按交易量","view-w5":"⑤ AI 评分 · 市值 $100k–$5M"};
+  for(const id in ti){ const e=document.querySelector("#"+id+" .phead .t"); if(e)e.textContent=t(ti[id]); } }
+function chooseLang(l){ LANG=l; localStorage.setItem("ui_lang",l); document.getElementById("lang-modal").hidden=true;
+  fetch("/api/config",{method:"POST",headers:H,body:JSON.stringify({lang:l})}).catch(()=>{});
+  applyI18n(); TABS.forEach(renderHead); if(TABS.includes(tab))drawPanel(tab); if(tab==="admin")renderAdmin(); refreshStatus(); }
 // ---------- formatters ----------
 function esc(s){ return (s==null?"":""+s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
 function empty(){ return `<span class="empty">—</span>`; }
@@ -127,21 +193,31 @@ function nameCell(t){ const ic=t.icon?`<img class="logo" src="${t.icon}" onerror
 function ago(ts){ if(!ts)return "—"; const s=Math.max(0,Date.now()/1000-ts); if(s<60)return Math.floor(s)+"s"; if(s<3600)return Math.floor(s/60)+"m"; if(s<86400)return Math.floor(s/3600)+"h"; return Math.floor(s/86400)+"d"; }
 function timeCell(ts){ return ts?`<span title="${new Date(ts*1000).toISOString()}">${ago(ts)} ago</span>`:pend(); }
 function isoAgo(s){ return s?ago(Date.parse(s)/1000)+" ago":empty(); }
-function kolCell(t){ if(t.creator_is_kol==null) return pend();
-  return t.creator_is_kol? `<span class="yes">✓KOL</span>${t.creator_twitter?` <a href="https://x.com/${t.creator_twitter}" target="_blank">@${esc(t.creator_twitter)}</a>`:""}` : `<span class="dim">否</span>`; }
-function fav(ca){ const f=prompt("加入③收藏，监控频率（秒）：","60"); if(f===null)return; fetch("/api/watch",{method:"POST",headers:H,body:JSON.stringify({ca,interval:+f||60})}).then(()=>toast("已收藏 "+short(ca))); }
+function kolCell(x){ if(x.creator_is_kol==null) return pend();
+  return x.creator_is_kol? `<span class="yes">✓KOL</span>${x.creator_twitter?` <a href="https://x.com/${x.creator_twitter}" target="_blank">@${esc(x.creator_twitter)}</a>`:""}` : `<span class="dim">${t("否")}</span>`; }
+function fav(ca){ const f=prompt(t("加入③收藏，监控频率（秒）："),"60"); if(f===null)return; fetch("/api/watch",{method:"POST",headers:H,body:JSON.stringify({ca,interval:+f||60})}).then(()=>toast(t("已收藏")+" "+short(ca))); }
 function favBtn(t){ return `<button class="mini" title="收藏" onclick="fav('${t.ca}')">★</button>`; }
 function delBtn(t){ return `<button class="del" title="移除" onclick="unwatch('${t.ca}')">✕</button>`; }
 function freqCell(t){ return `<input class="in freq" value="${t.interval}" title="监控频率(秒)" onchange="setFreq('${t.ca}',this.value)">s`; }
 const ANA_RUN=["gathering","analyzing","rendering","started"];
-function anaCell(t){ const a=ANA[t.ca]||{};
-  if(a.has_report||a.status==="done") return `<a href="/api/report/${t.ca}" target="_blank">📄 报告</a> <button class="mini" title="重新分析" onclick="analyze('${t.ca}')">🔄</button>`;
+function anaCell(x){ const a=ANA[x.ca]||{};
+  if(a.has_report||a.status==="done") return `<a href="/api/report/${x.ca}" target="_blank">${t("📄 报告")}</a> <button class="mini" title="${t("重新分析")}" onclick="analyze('${x.ca}')">🔄</button>`;
   if(ANA_RUN.includes(a.status)) return `<span class="pos">⏳ ${esc(a.step||a.status)}</span>`;
-  if(a.status==="error") return `<span class="dim" title="${esc(a.error||'')}">⚠ 失败</span> <button class="mini" onclick="analyze('${t.ca}')">🔄</button>`;
-  return `<button class="mini" title="用 ${STATUS.engine==='codex'?'Codex':'Claude'} 深度分析：抓链上+X→本地wiki→报告→PDF" onclick="analyze('${t.ca}')">🔬 分析</button>`; }
+  if(a.status==="error") return `<span class="dim" title="${esc(a.error||'')}">${t("⚠ 失败")}</span> <button class="mini" onclick="analyze('${x.ca}')">🔄</button>`;
+  return `<button class="mini" title="${(STATUS.engine==='codex'?'Codex':'Claude')} · ${t("深度分析")}" onclick="analyze('${x.ca}')">${t("🔬 分析")}</button>`; }
 const PALETTE=["#4a9eff","#3fb950","#d29922","#db61a2","#a371f7","#f0883e","#39c5cf","#e35"]; const PC={};
 function pc(p){ if(!(p in PC))PC[p]=PALETTE[Object.keys(PC).length%PALETTE.length]; return PC[p]; }
 function platCell(t){ const p=t.platform; return p?`<span class="badge" style="background:${pc(p)}22;color:${pc(p)}">${esc(p)}</span>`:empty(); }
+function scoreCell(x){ if(x.scoring) return `<span class="dim">⏳ ${t("评分中")}</span>`;
+  if(x.score==null) return `<span class="dim">${t("待评分")}</span>`;
+  const s=+x.score, c=s>=70?"var(--green)":s>=40?"var(--amber)":"var(--red)";
+  return `<span class="score" style="color:${c}">${s}<small>/100</small></span>`; }
+function rationaleCell(x){ if(x.error) return `<span class="dim" title="${esc(x.error)}">⚠ ${esc((x.error||"").slice(0,50))}</span>`;
+  if(x.rationale) return esc(x.rationale);
+  if(x.scoring) return `<span class="dim">${t("分析中…")}</span>`; return `<span class="empty">${t("待评分")}</span>`; }
+function scoredCell(x){ return x.scored_at?`<span title="${new Date(x.scored_at*1000).toISOString()}">${ago(x.scored_at)} ago</span>`:(x.scoring?pend():`<span class="dim">—</span>`); }
+function fieldOn(win,name){ const f=(STATUS.fields||{})[win]||{}; return f[name]!==false; }
+function cols(win){ return (COLS[win]||[]).filter(c=>!c.field||fieldOn(win,c.field)); }
 
 // ---------- columns ----------
 const COLS={
@@ -151,12 +227,12 @@ const COLS={
     {k:"ca",label:"CA",cls:"l mono",r:t=>addr(t.ca,"token")},
     {k:"created_ts",label:"创建时间",r:t=>timeCell(t.created_ts)},
     {k:"creator",label:"创建者",cls:"mono",r:t=>addr(t.creator,"address")},
-    {k:"creator_is_kol",label:"是否KOL",cls:"l",r:kolCell},
-    {k:"tx_robinhood",label:"rh笔",r:t=>txc(t.tx_robinhood)},
-    {k:"tx_eth",label:"ETH笔",r:t=>txc(t.tx_eth)},
-    {k:"tx_bsc",label:"BSC笔",r:t=>txc(t.tx_bsc)},
-    {k:"tx_base",label:"BASE笔",r:t=>txc(t.tx_base)},
-    {k:"tx_hyperevm",label:"hyperEVM笔",r:t=>txc(t.tx_hyperevm)},
+    {k:"creator_is_kol",label:"是否KOL",cls:"l",field:"kol",r:kolCell},
+    {k:"tx_robinhood",label:"rh笔",field:"txcounts",r:t=>txc(t.tx_robinhood)},
+    {k:"tx_eth",label:"ETH笔",field:"txcounts",r:t=>txc(t.tx_eth)},
+    {k:"tx_bsc",label:"BSC笔",field:"txcounts",r:t=>txc(t.tx_bsc)},
+    {k:"tx_base",label:"BASE笔",field:"txcounts",r:t=>txc(t.tx_base)},
+    {k:"tx_hyperevm",label:"hyperEVM笔",field:"txcounts",r:t=>txc(t.tx_hyperevm)},
     {k:"_fav",label:"★",r:favBtn},
   ],
   w2:[
@@ -166,11 +242,11 @@ const COLS={
     {k:"price",label:"价格",r:t=>usd(t.price)},
     {k:"mcap",label:"市值",r:t=>usd(t.mcap)},
     {k:"volume24",label:"24h量",r:t=>usd(t.volume24)},
-    {k:"holders",label:"holders",r:t=>num(t.holders)},
-    {k:"transfers",label:"交易数",r:t=>num(t.transfers)},
-    {k:"liquidity",label:"流动性",r:t=>usd(t.liquidity)},
-    {k:"eth_in_pools",label:"池ETH",r:t=>t.eth_in_pools==null?empty():`${fmt(t.eth_in_pools)} Ξ`},
-    {k:"x_ca",label:"X舆情",r:t=>xnum(t.x_ca)},
+    {k:"holders",label:"holders",field:"holders",r:t=>num(t.holders)},
+    {k:"transfers",label:"交易数",field:"transfers",r:t=>num(t.transfers)},
+    {k:"liquidity",label:"流动性",field:"liquidity",r:t=>usd(t.liquidity)},
+    {k:"eth_in_pools",label:"池ETH",field:"eth",r:t=>t.eth_in_pools==null?empty():`${fmt(t.eth_in_pools)} Ξ`},
+    {k:"x_ca",label:"X舆情",field:"x",r:t=>xnum(t.x_ca)},
     {k:"_fav",label:"★",r:favBtn},
   ],
   w4:[
@@ -181,11 +257,23 @@ const COLS={
     {k:"price",label:"价格",r:t=>usd(t.price)},
     {k:"mcap",label:"市值",r:t=>usd(t.mcap)},
     {k:"volume24",label:"24h量",r:t=>usd(t.volume24)},
+    {k:"holders",label:"holders",field:"holders",r:t=>num(t.holders)},
+    {k:"transfers",label:"交易数",field:"transfers",r:t=>num(t.transfers)},
+    {k:"liquidity",label:"流动性",field:"liquidity",r:t=>usd(t.liquidity)},
+    {k:"eth_in_pools",label:"池ETH",field:"eth",r:t=>t.eth_in_pools==null?empty():`${fmt(t.eth_in_pools)} Ξ`},
+    {k:"x_ca",label:"X舆情",field:"x",r:t=>xnum(t.x_ca)},
+    {k:"_fav",label:"★",r:favBtn},
+  ],
+  w5:[
+    {k:"platform",label:"平台",cls:"l",r:platCell},
+    {k:"symbol",label:"名称",cls:"l",r:nameCell},
+    {k:"ca",label:"CA",cls:"l mono",r:t=>addr(t.ca,"token")},
+    {k:"score",label:"AI评分",r:scoreCell},
+    {k:"rationale",label:"评分理由",cls:"l wrap",r:rationaleCell},
+    {k:"mcap",label:"市值",r:t=>usd(t.mcap)},
     {k:"holders",label:"holders",r:t=>num(t.holders)},
-    {k:"transfers",label:"交易数",r:t=>num(t.transfers)},
-    {k:"liquidity",label:"流动性",r:t=>usd(t.liquidity)},
-    {k:"eth_in_pools",label:"池ETH",r:t=>t.eth_in_pools==null?empty():`${fmt(t.eth_in_pools)} Ξ`},
-    {k:"x_ca",label:"X舆情",r:t=>xnum(t.x_ca)},
+    {k:"volume24",label:"24h量",r:t=>usd(t.volume24)},
+    {k:"scored_at",label:"评分时间",r:scoredCell},
     {k:"_fav",label:"★",r:favBtn},
   ],
   w3:[
@@ -195,25 +283,25 @@ const COLS={
     {k:"price",label:"价格",r:t=>usd(t.price)},
     {k:"mcap",label:"市值",r:t=>usd(t.mcap)},
     {k:"volume24",label:"24h量",r:t=>usd(t.volume24)},
-    {k:"liquidity",label:"流动性",r:t=>usd(t.liquidity)},
-    {k:"kol",label:"KOL数",r:t=>cnt(t.kol)},
-    {k:"smart",label:"聪明钱数",r:t=>cnt(t.smart)},
-    {k:"x_ca",label:"X舆情",r:t=>xnum(t.x_ca)},
+    {k:"liquidity",label:"流动性",field:"liquidity",r:t=>usd(t.liquidity)},
+    {k:"kol",label:"KOL数",field:"kolsmart",r:t=>cnt(t.kol)},
+    {k:"smart",label:"聪明钱数",field:"kolsmart",r:t=>cnt(t.smart)},
+    {k:"x_ca",label:"X舆情",field:"x",r:t=>xnum(t.x_ca)},
     {k:"updated",label:"更新",r:t=>isoAgo(t.updated)},
     {k:"_ana",label:"深度分析",cls:"l",r:anaCell},
     {k:"_del",label:"",r:delBtn},
   ],
 };
-const SORT={w1:{k:"created_ts",d:-1},w2:{k:"volume24",d:-1},w3:{k:null,d:-1},w4:{k:"volume24",d:-1}};
-const SEEN={w1:new Set(),w2:new Set(),w3:new Set(),w4:new Set()};
-const DATA={w1:[],w2:[],w3:[],w4:[]};
+const SORT={w1:{k:"created_ts",d:-1},w2:{k:"volume24",d:-1},w3:{k:null,d:-1},w4:{k:"volume24",d:-1},w5:{k:"score",d:-1}};
+const SEEN={w1:new Set(),w2:new Set(),w3:new Set(),w4:new Set(),w5:new Set()};
+const DATA={w1:[],w2:[],w3:[],w4:[],w5:[]};
 const H={"Content-Type":"application/json"};
 let ANA={}, STATUS={}, tab="w1";
 
 // ---------- render ----------
-function renderHead(win){ document.getElementById("head-"+win).innerHTML=COLS[win].map(c=>{
+function renderHead(win){ document.getElementById("head-"+win).innerHTML=cols(win).map(c=>{
   const s=SORT[win], a=c.k===s.k?`<span class="arrow">${s.d<0?"▼":"▲"}</span>`:"";
-  return `<th class="${c.cls||''}" onclick="sortBy('${win}','${c.k}')">${c.label} ${a}</th>`;}).join(""); }
+  return `<th class="${c.cls||''}" onclick="sortBy('${win}','${c.k}')">${t(c.label)} ${a}</th>`;}).join(""); }
 function sortBy(win,k){ if(k.startsWith("_"))return; const s=SORT[win]; if(s.k===k)s.d=-s.d; else{s.k=k;s.d=-1;} renderHead(win); drawPanel(win); }
 function drawPanel(win){
   let r=[...(DATA[win]||[])]; const s=SORT[win];
@@ -221,41 +309,56 @@ function drawPanel(win){
     if(x==null)x=(typeof y==="number"?-Infinity:""); if(y==null)y=(typeof x==="number"?-Infinity:"");
     if(typeof x==="string"||typeof y==="string"){x=""+x;y=""+y;return x<y?-s.d:x>y?s.d:0;} return (x-y)*s.d; });
   if(!r.length){ const w=STATUS[win]||{}; let msg;
-    if(win==="w3") msg="暂无收藏 —— 在 ①/②/④ 表格点 ★ 添加";
-    else if(!w.enabled) msg="⏸ 已暂停（在此窗口或④管理开启）";
-    else if(w.running) msg="⏳ "+esc(w.phase||"扫描中…");
-    else msg="⏳ 加载中…（首屏可能需要 1-2 分钟）";
-    document.getElementById("body-"+win).innerHTML=`<tr><td class="dim" colspan="${COLS[win].length}" style="padding:18px;text-align:center">${msg}</td></tr>`; return; }
-  const seen=SEEN[win];
+    if(win==="w3") msg=t("暂无收藏 —— 在 ①/②/④/⑤ 表格点 ★ 添加");
+    else if(!w.enabled) msg=t("⏸ 已暂停（在此窗口或⚙️管理开启）");
+    else if(w.running) msg="⏳ "+esc(tphase(w.phase)||t("扫描中"));
+    else if(win==="w5") msg=w.phase?("⏳ "+esc(tphase(w.phase))):t("⏳ 拉取候选中…（市值 $100k–$5M，随后滚动评分）");
+    else msg=t("⏳ 加载中…（首屏可能需要 1-2 分钟）");
+    document.getElementById("body-"+win).innerHTML=`<tr><td class="dim" colspan="${cols(win).length}" style="padding:18px;text-align:center">${msg}</td></tr>`; return; }
+  const seen=SEEN[win], cs=cols(win);
   document.getElementById("body-"+win).innerHTML=r.map(t=>{
     const isNew=!seen.has(t.ca); if(isNew)seen.add(t.ca);
-    return `<tr class="${isNew&&seen.size>1?'flash':''}">`+COLS[win].map(c=>`<td class="${c.cls||''}">${c.r(t)}</td>`).join("")+"</tr>";}).join("");
+    return `<tr class="${isNew&&seen.size>1?'flash':''}${t.scoring?' scoring-row':''}">`+cs.map(c=>`<td class="${c.cls||''}">${c.r(t)}</td>`).join("")+"</tr>";}).join("");
 }
 function updatePanelHeader(win){ const w=STATUS[win]||{};
   const pill=document.getElementById("pill-"+win);
   if(pill){
-    if(!w.enabled){ pill.className="pill paused"; pill.textContent="⏸ 已暂停"; }
-    else if(w.running){ pill.className="pill run"; pill.innerHTML=`<span class="dot"></span>扫描中${w.phase?` · ${esc(w.phase)}`:""}`; }
-    else { pill.className="pill idle"; pill.textContent=(w.phase&&w.phase!=="空闲")?("✓ "+esc(w.phase)):"✓ 空闲"; }
+    if(!w.enabled){ pill.className="pill paused"; pill.textContent=t("⏸ 已暂停"); }
+    else if(win==="w5"&&w.scoring){ pill.className="pill run"; pill.innerHTML=`<span class="dot"></span>${t("评分中")} ${esc(w.scoring_sym||short(w.scoring||""))}`; }
+    else if(w.running){ pill.className="pill run"; pill.innerHTML=`<span class="dot"></span>${t("扫描中")}${w.phase?` · ${esc(tphase(w.phase))}`:""}`; }
+    else if(win==="w5"){ pill.className="pill idle"; pill.textContent=`✓ ${t("滚动评分")} ${w.scored||0}/${w.pool||0}`; }
+    else { pill.className="pill idle"; pill.textContent=(w.phase&&w.phase!=="空闲")?("✓ "+esc(tphase(w.phase))):("✓ "+t("空闲")); }
   }
-  const meta=document.getElementById("ph-"+win);
-  if(meta) meta.innerHTML=`${w.count||0} 条 · 上次 ${w.last?w.last.slice(11,19):'—'}${w.interval?` · 间隔 ${w.interval}s`:''}`;
-  const pb=document.getElementById("pause-"+win); if(pb) pb.textContent=w.enabled?"⏸ 暂停":"▶ 开启";
+  const meta=document.getElementById("ph-"+win), last=w.last?w.last.slice(11,19):'—';
+  if(meta){ if(win==="w5") meta.innerHTML=`${t("已评")} ${w.scored||0} / ${t("共")} ${w.pool||0}${w.scoring?` · ${t("正在评分")} ${esc(w.scoring_sym||'')}`:''} · ${t("刷新")} ${last}`;
+    else meta.innerHTML=`${w.count||0} ${t("条")} · ${t("上次")} ${last}${w.interval?` · ${t("间隔")} ${w.interval}s`:''}`; }
+  if(win==="w5"){ const pr=document.getElementById("prog-w5"); if(pr){ const pool=w.pool||0,sc=w.scored||0,pct=pool?Math.round(sc/pool*100):0;
+    pr.querySelector(".fill").style.width=pct+"%";
+    pr.querySelector(".lbl").innerHTML=w.scoring?`⏳ ${t("正在评分")} <b class="pos">${esc(w.scoring_sym||'…')}</b> · ${sc}/${pool} (${pct}%)`:(w.enabled?`${t("滚动评分中")} · ${sc}/${pool} (${pct}%)`:`${t("已暂停")} · ${sc}/${pool}`); } }
+  const pb=document.getElementById("pause-"+win); if(pb) pb.textContent=w.enabled?t("⏸ 暂停"):t("▶ 开启");
 }
 
 // ---------- controls ----------
-function toggleWin(win){ const en=!(STATUS[win]||{}).enabled; fetch("/api/window/"+win+"/toggle",{method:"POST",headers:H,body:JSON.stringify({enabled:en})}).then(refreshStatus); }
+function toggleWin(win){ const en=!(STATUS[win]||{}).enabled;
+  if(en){ const active=TABS.filter(w=>(STATUS[w]||{}).enabled).length; if(active>=(STATUS.max_active||2)){ limitModal(); return; } }
+  fetch("/api/window/"+win+"/toggle",{method:"POST",headers:H,body:JSON.stringify({enabled:en})}).then(r=>r.json()).then(j=>{ if(j&&j.ok===false&&j.reason==="limit")limitModal(); refreshStatus(); }); }
 function unwatch(ca){ fetch("/api/watch/"+ca,{method:"DELETE"}).then(tick); }
 function setFreq(ca,v){ fetch("/api/watch/"+ca+"/interval",{method:"POST",headers:H,body:JSON.stringify({interval:+v||60})}).then(()=>toast("频率 "+(+v||60)+"s")); }
 function setConc(v){ v=Math.max(1,Math.min(100,+v||10)); fetch("/api/config",{method:"POST",headers:H,body:JSON.stringify({concurrency:v})}).then(()=>toast("并发 "+v)); }
 function setRdir(v){ if(!v)return; fetch("/api/config",{method:"POST",headers:H,body:JSON.stringify({report_dir:v})}).then(()=>toast("报告目录已设")); }
-function setLang(v){ fetch("/api/config",{method:"POST",headers:H,body:JSON.stringify({lang:v})}).then(()=>toast("分析语言: "+(v==="zh"?"中文":"English"))); }
+function setLang(v){ fetch("/api/config",{method:"POST",headers:H,body:JSON.stringify({lang:v})}).then(()=>toast(t("分析语言")+": "+(v==="zh"?"中文":"English"))); }
 function setEngine(v){ fetch("/api/config",{method:"POST",headers:H,body:JSON.stringify({engine:v})}).then(()=>toast("分析引擎: "+(v==="codex"?"Codex":"Claude Code"))); }
 function setIval(win,v){ fetch("/api/window/"+win+"/interval",{method:"POST",headers:H,body:JSON.stringify({interval:+v||5})}).then(()=>toast(MARK[win]+" 间隔 "+(+v||5)+"s")); }
 function togglePlat(name,en){ fetch("/api/platform/toggle",{method:"POST",headers:H,body:JSON.stringify({name,enabled:en})}).then(()=>toast(name+(en?" 已启用":" 已停用"))); }
-function analyze(ca){ ANA[ca]={status:"started",step:"启动…"}; drawPanel("w3");
-  fetch("/api/analyze",{method:"POST",headers:H,body:JSON.stringify({ca})}).then(()=>{toast("深度分析已启动 "+short(ca));pollAna(ca);}); }
-function pollAna(ca){ fetch("/api/analyze/"+ca).then(r=>r.json()).then(j=>{ANA[ca]=j; drawPanel("w3"); if(ANA_RUN.includes(j.status)) setTimeout(()=>pollAna(ca),3000); else if(j.status==="done") toast("✅ 报告已生成 "+short(ca));}).catch(()=>{}); }
+function setField(win,name,en){ fetch("/api/field/toggle",{method:"POST",headers:H,body:JSON.stringify({win,name,enabled:en})}).then(refreshStatus).then(()=>toast(t(WLAB[win]||win)+"·"+t(FLAB[name]||name)+" "+(en?t("已启用"):t("已关闭")))); }
+function tgSet(patch){ fetch("/api/tg/config",{method:"POST",headers:H,body:JSON.stringify(patch)}).then(()=>refreshStatus()).then(()=>toast(t("Telegram 设置已保存"))); }
+function tgTest(){ toast(t("发送中…")); fetch("/api/tg/test",{method:"POST"}).then(r=>r.json()).then(j=>toast(j.ok?t("✅ 测试消息已发送"):("⚠ "+j.msg))); }
+function tgChats(){ fetch("/api/tg/chats").then(r=>r.json()).then(j=>{ const el=document.getElementById("tg-chats"); if(!el)return;
+  if(!j.chats||!j.chats.length){ el.textContent=t("未找到 chat（先在 Telegram 给你的 bot 发一条消息，再点刷新）"); return; }
+  el.innerHTML=t("点击选用: ")+j.chats.map(c=>`<a href="#" onclick="document.getElementById('tg-chat').value='${c.id}';tgSet({chat_id:'${c.id}'});return false">${c.id} (${esc(c.name||c.type||'')})</a>`).join(" · "); }); }
+function analyze(ca){ ANA[ca]={status:"started",step:t("启动…")}; drawPanel("w3");
+  fetch("/api/analyze",{method:"POST",headers:H,body:JSON.stringify({ca})}).then(()=>{toast(t("深度分析已启动")+" "+short(ca));pollAna(ca);}); }
+function pollAna(ca){ fetch("/api/analyze/"+ca).then(r=>r.json()).then(j=>{ANA[ca]=j; drawPanel("w3"); if(ANA_RUN.includes(j.status)) setTimeout(()=>pollAna(ca),3000); else if(j.status==="done") toast(t("✅ 报告已生成")+" "+short(ca));}).catch(()=>{}); }
 let toastT; function toast(m){ const e=document.getElementById("toast"); e.textContent=m; e.classList.add("on"); clearTimeout(toastT); toastT=setTimeout(()=>e.classList.remove("on"),2500); }
 
 function switchTab(t){ tab=t;
@@ -263,31 +366,42 @@ function switchTab(t){ tab=t;
     const v=document.getElementById("view-"+x); if(v)v.hidden=(x!==t); });
   if(t==="admin") renderAdmin(); else tick(); }
 
-function renderAdmin(){ const st=STATUS; if(!st.w1) return;
+function renderAdmin(){ const st=STATUS; if(!st.w1) return; const tgc=st.telegram||{};
   const el=document.getElementById("view-admin");
-  const winRow=(w,label)=>`<div class="row"><span class="lbl">${label}</span><span>${st[w].interval!=null?`<input class="in freq" value="${st[w].interval}" onchange="setIval('${w}',this.value)">s `:''}<button class="${st[w].enabled?'':'off'}" onclick="toggleWin('${w}')">${st[w].enabled?'监控中':'已暂停'}</button></span></div>`;
+  const winRow=(w,label)=>`<div class="row"><span class="lbl">${t(label)}</span><span>${st[w].interval!=null?`<input class="in freq" value="${st[w].interval}" onchange="setIval('${w}',this.value)">s `:''}<button class="${st[w].enabled?'':'off'}" onclick="toggleWin('${w}')">${st[w].enabled?t("监控中"):t("已暂停")}</button></span></div>`;
   el.innerHTML=`
-    <div class="card"><h3>全局</h3>
-      <div class="row"><span class="lbl">并发请求数 (1-100)</span><input class="in freq" value="${st.concurrency||10}" onchange="setConc(this.value)"></div>
-      <div class="row"><span class="lbl">报告输出目录</span><input class="in wide" value="${esc(st.report_dir||'')}" onchange="setRdir(this.value)"></div>
-      <div class="row"><span class="lbl">分析报告语言</span><select class="in" onchange="setLang(this.value)"><option value="zh"${st.lang==='zh'?' selected':''}>中文</option><option value="en"${st.lang==='en'?' selected':''}>English</option></select></div>
-      <div class="row"><span class="lbl">🔬 深度分析引擎</span><select class="in" onchange="setEngine(this.value)"><option value="claude"${st.engine==='claude'?' selected':''}>Claude Code</option><option value="codex"${st.engine==='codex'?' selected':''}>Codex</option></select></div>
+    <div class="card"><h3>${t("全局")}</h3>
+      <div class="row"><span class="lbl">${t("并发请求数 (1-100)")}</span><input class="in freq" value="${st.concurrency||10}" onchange="setConc(this.value)"></div>
+      <div class="row"><span class="lbl">${t("报告输出目录")}</span><input class="in wide" value="${esc(st.report_dir||'')}" onchange="setRdir(this.value)"></div>
+      <div class="row"><span class="lbl">${t("分析报告语言")}</span><select class="in" onchange="setLang(this.value)"><option value="zh"${st.lang==='zh'?' selected':''}>中文</option><option value="en"${st.lang==='en'?' selected':''}>English</option></select></div>
+      <div class="row"><span class="lbl">${t("🔬 深度分析引擎")}</span><select class="in" onchange="setEngine(this.value)"><option value="claude"${st.engine==='claude'?' selected':''}>Claude Code</option><option value="codex"${st.engine==='codex'?' selected':''}>Codex</option></select></div>
     </div>
-    <div class="card"><h3>窗口 · 扫描间隔 / 开关</h3>
-      ${winRow('w1','① 新发射实时')}
-      ${winRow('w2','② Top100 热门')}
-      ${winRow('w4','④ 3天内新币')}
-      ${winRow('w3','③ 收藏监控')}
+    <div class="card"><h3>${t("窗口 · 扫描间隔 / 开关")}</h3>
+      <div class="dim" style="font-size:11px;margin-bottom:6px">⚠️ ${t("最多同时监控 2 个窗口")}</div>
+      ${winRow('w1','① 新发射实时')}${winRow('w2','② Top100 热门')}${winRow('w4','④ 3天内新币')}${winRow('w5','⑤ AI评分(候选刷新)')}${winRow('w3','③ 收藏监控')}
     </div>
-    <div class="card"><h3>① 新发射 · 平台工厂</h3>
+    <div class="card"><h3>${t("📲 Telegram 评分提醒")}</h3>
+      <div class="row"><span class="lbl">${t("启用提醒")}</span><input type="checkbox" ${tgc.enabled?'checked':''} onchange="tgSet({enabled:this.checked})"></div>
+      <div class="row"><span class="lbl">${t("评分 ≥ 阈值时提醒")}</span><input class="in freq" value="${tgc.threshold||80}" onchange="tgSet({threshold:this.value})"></div>
+      <div class="row"><span class="lbl">Bot Token ${tgc.has_token?'✓':''}</span><input class="in wide" placeholder="${esc(tgc.token||'123456:ABC…')}" onchange="tgSet({token:this.value})"></div>
+      <div class="row"><span class="lbl">Chat ID</span><span><input class="in" id="tg-chat" value="${esc(tgc.chat_id||'')}" onchange="tgSet({chat_id:this.value})"> <button class="ghost sm" onclick="tgChats()">${t("刷新chat_id")}</button></span></div>
+      <div id="tg-chats" class="dim" style="font-size:11px;padding:2px 0"></div>
+      <div class="row"><span class="lbl"></span><button class="ghost sm" onclick="tgTest()">${t("发送测试")}</button></div>
+    </div>
+    <div class="card"><h3>${t("扫描字段自定义")}</h3>
+      <div class="dim" style="font-size:11px;margin-bottom:8px">${t("关掉字段 = 跳过抓取(省配额、更快) + 隐藏该列；⑤为AI评分的数据采集项")}</div>
+      ${Object.entries(st.fields||{}).map(([win,fs])=>`<div style="padding:5px 0;border-bottom:1px solid #1b2130"><b>${t(WLAB[win]||win)}</b><div style="margin-top:3px">${Object.entries(fs).map(([n,v])=>`<label class="chk" style="display:inline-flex;margin-right:12px"><input type="checkbox" ${v?'checked':''} onchange="setField('${win}','${n}',this.checked)"> ${t(FLAB[n]||n)}</label>`).join("")}</div></div>`).join("")}
+    </div>
+    <div class="card"><h3>${t("① 新发射 · 平台工厂")}</h3>
       ${(st.platforms||[]).map(p=>`<label class="chk"><input type="checkbox" ${p.enabled?'checked':''} onchange="togglePlat('${esc(p.name)}',this.checked)"> ${esc(p.name)}</label>`).join("")}
     </div>
-    <div class="card"><h3>运行状态</h3>
-      <div class="row"><span class="lbl">最新区块</span><b>${st.latest_block||'—'}</b></div>
-      <div class="row"><span class="lbl">API 调用总数</span><b>${st.api_calls}</b></div>
-      <div class="row"><span class="lbl">钱包画像缓存</span><b>${st.wallet_cache}</b></div>
-      <div class="row"><span class="lbl">①/②/③/④ 条数</span><b>${st.w1.count} / ${st.w2.count} / ${st.w3.count} / ${st.w4.count}</b></div>
-      ${(st.errors&&st.errors.length)?('<div class="row"><span class="lbl">最近错误</span></div>'+st.errors.slice().reverse().slice(0,6).map(e=>`<div class="dim" style="font-size:11px;padding:2px 0">${(e.t||'').slice(11,19)} ${esc(e.msg)}</div>`).join('')):'<div class="row"><span class="lbl">最近错误</span><span class="pos">无</span></div>'}
+    <div class="card"><h3>${t("运行状态")}</h3>
+      <div class="row"><span class="lbl">${t("最新区块")}</span><b>${st.latest_block||'—'}</b></div>
+      <div class="row"><span class="lbl">${t("API 调用总数")}</span><b>${st.api_calls}</b></div>
+      <div class="row"><span class="lbl">${t("钱包画像缓存")}</span><b>${st.wallet_cache}</b></div>
+      <div class="row"><span class="lbl">①/②/③/④</span><b>${st.w1.count} / ${st.w2.count} / ${st.w3.count} / ${st.w4.count}</b></div>
+      <div class="row"><span class="lbl">⑤ AI</span><b>${t("已评")} ${st.w5.scored||0} / ${st.w5.count||0}</b></div>
+      ${(st.errors&&st.errors.length)?('<div class="row"><span class="lbl">'+t("最近错误")+'</span></div>'+st.errors.slice().reverse().slice(0,6).map(e=>`<div class="dim" style="font-size:11px;padding:2px 0">${(e.t||'').slice(11,19)} ${esc(e.msg)}</div>`).join('')):'<div class="row"><span class="lbl">'+t("最近错误")+'</span><span class="pos">'+t("无")+'</span></div>'}
     </div>`;
 }
 
@@ -296,10 +410,13 @@ async function refreshStatus(){ if(document.hidden) return; try{ STATUS=await fe
   document.getElementById("s-block").innerHTML="block <b>"+(STATUS.latest_block||"—")+"</b>";
   document.getElementById("s-tok").innerHTML="tokens <b>"+((STATUS.w1?.count||0)+(STATUS.w2?.count||0))+"</b>";
   document.getElementById("s-api").innerHTML="API <b>"+STATUS.api_calls+"</b>";
-  const running=TABS.filter(w=>STATUS[w]&&STATUS[w].running).map(w=>MARK[w]);
-  document.getElementById("s-act").innerHTML=running.length?`<span class="pos">⏳ 扫描中 ${running.join(" ")}</span>`:`<span class="dim">· 空闲</span>`;
-  document.getElementById("s-err").textContent=STATUS.error?("⚠ "+STATUS.error):"";
+  const running=TABS.filter(w=>STATUS[w]&&(STATUS[w].running||(w==="w5"&&STATUS[w].scoring))).map(w=>MARK[w]);
+  document.getElementById("s-act").innerHTML=running.length?`<span class="pos">⏳ ${running.join(" ")}</span>`:`<span class="dim">· 空闲</span>`;
+  const rb=STATUS.rate_banned||0;
+  document.getElementById("s-err").innerHTML=rb>0?`<span style="color:var(--amber)">⚠ ${t("上游限流,剩")} ${rb}s</span>`:(STATUS.error?("⚠ "+esc(STATUS.error)):"");
   TABS.forEach(updatePanelHeader);
+  const sig=JSON.stringify(STATUS.fields||{});          // re-render heads only when field toggles change
+  if(sig!==window._fsig){ window._fsig=sig; TABS.forEach(renderHead); if(TABS.includes(tab)) drawPanel(tab); }
   if(tab==="admin" && !document.getElementById("view-admin").contains(document.activeElement)) renderAdmin();
 }catch(e){} }
 async function tick(){ if(!TABS.includes(tab)||document.hidden) return; try{
@@ -308,6 +425,8 @@ async function tick(){ if(!TABS.includes(tab)||document.hidden) return; try{
   drawPanel(tab);
 }catch(e){} }
 
+if(!LANG) document.getElementById("lang-modal").hidden=false;   // first visit → choose language
+applyI18n();
 TABS.forEach(renderHead);
 refreshStatus(); tick();
 setInterval(tick,5000); setInterval(refreshStatus,3000);

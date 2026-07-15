@@ -145,9 +145,39 @@ async def rh_token(ca):
         "created_ts": _i(info.get("creation_timestamp") or info.get("open_timestamp")),  # real deploy, not migration
         "platform": info.get("launchpad_platform"),
         "creator": (dev.get("creator_address") or info.get("creator") or "").lower() or None,
+        "trading": {
+            "buys_24h": _i(price.get("buys_24h")), "sells_24h": _i(price.get("sells_24h")),
+            "swaps_24h": _i(price.get("swaps_24h")),
+            "vol_1h": _f(price.get("volume_1h")), "vol_6h": _f(price.get("volume_6h")),
+            "vol_24h": _f(price.get("volume_24h")),
+            "price_1h": _f(price.get("price_1h")), "price_6h": _f(price.get("price_6h")),
+            "price_24h": _f(price.get("price_24h")),
+        } if price else {},
     }
     _token_cache.set(ca, out)
     return out
+
+
+async def rh_by_mcap(min_mcap, max_mcap, limit=120, pages=3):
+    """Tokens whose market cap is in [min_mcap, max_mcap], via dex_trending ordered
+    by marketcap (paged down with max_marketcap)."""
+    seen, ceil = {}, max_mcap
+    for _ in range(max(1, pages)):
+        rows = await rh_trending(order_by="marketcap", limit=50,
+                                 extra={"min_marketcap": min_mcap, "max_marketcap": ceil})
+        rows = [t for t in rows if t.get("mcap") and min_mcap <= t["mcap"] <= max_mcap]
+        if not rows:
+            break
+        for t in rows:
+            if t["ca"]:
+                seen.setdefault(t["ca"], t)
+        low = min(t["mcap"] for t in rows)
+        if low >= ceil:                    # no downward progress → stop
+            break
+        ceil = low
+        if len(seen) >= limit + 10:
+            break
+    return sorted(seen.values(), key=lambda t: (t["mcap"] or 0), reverse=True)[:limit]
 
 
 async def rh_holders(ca, limit=30):

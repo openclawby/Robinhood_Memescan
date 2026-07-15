@@ -1,128 +1,154 @@
 # 🦬 Robinhood Memescan
 
-基于 **Clawby API** 的 Robinhood 链 meme 币实时监控与深度分析看板。四个监控窗口 + 一个管理面板，一键抓取链上/社交数据并用本地 **Claude Code / Codex** 生成 PDF 研究报告。
+**English** · [中文](README.zh-CN.md)
 
-> 数据全部来自 Clawby（`dex_trending` / `dex_token_info` / `dex_token_holders` / `dexscreener` / `x_search` / 链上 RPC）。无需 Blockscout。
+A real-time **meme-coin monitor & AI scoring dashboard for the Robinhood chain**, built entirely on the **[Clawby](https://www.openclawby.com/) API**. Five monitor windows + an admin panel; it gathers on-chain / holder / trading / social data and uses your local **Claude Code / Codex** to produce PDF research reports and 1–100 investment scores — with optional Telegram alerts.
+
+> All data comes from Clawby (`dex_trending` / `dex_token_info` / `dex_token_holders` / `dexscreener_*` / `x_search` + on-chain RPC). No Blockscout needed.
 
 ---
 
-## 功能一览
+## Features
 
-| 窗口 | 说明 |
+| Window | What it does |
 |---|---|
-| **① 新发射实时** | 轮询各发射平台的工厂合约事件（Clawby RPC `eth_getLogs`），实时发现新币：平台 / 名称 / CA / 创建时间 / 创建者 / 创建者是否 KOL / 创建者在 robinhood·ETH·BSC·Base·HyperEVM 五链的交易笔数 |
-| **② Top100 热门** | 按 24h 交易量排名的前 100 meme：平台 / 价格 / 市值 / 24h量 / holders / **交易数(24h swaps)** / 流动性 / 池内 ETH / X 舆情 |
-| **③ 收藏 · 深度分析** | 收藏任意 CA，按自定义频率刷新；额外显示 **KOL 数 / 聪明钱数**（采样 top 持有人打标签）；一键 **🔬 深度分析** 生成 PDF |
-| **④ 3天内新币** | 只看**真实创建时间 ≤ 3 天**的币，按 24h 量取前 100（自动用链上创建时间校准，排除"老币刚毕业"） |
-| **⑤ 管理** | 全局设置（并发 / 报告目录 / 报告语言 / **分析引擎** ）、各窗口扫描间隔与暂停、发射平台工厂开关、运行状态与最近错误 |
+| **① New Launches** | Polls each launchpad's factory events (Clawby RPC `eth_getLogs`) for brand-new tokens: platform / name / CA / creation time / creator / is-creator-a-KOL + the creator's tx counts across **5 chains** (robinhood · ETH · BSC · Base · HyperEVM) |
+| **② Top100** | Top 100 memes by 24h volume: platform / price / mcap / 24h vol / holders / **txns (24h swaps)** / liquidity / ETH-in-pool / X buzz |
+| **③ Watchlist** | Favorite any CA, per-CA refresh interval; adds **KOL / smart-money counts** (sampled top holders) and a one-click **🔬 deep analysis → PDF** |
+| **④ New ≤3 days** | Only coins whose **real on-chain creation time ≤ 3 days**, top 100 by volume (creation time is calibrated on-chain, so "old coins that just graduated" are excluded) |
+| **⑤ AI Score** | Every 10 min scans memes with **mcap $100k–$5M**, stores their on-chain / holder / trading / social data as an LLM wiki, then uses **Claude Code / Codex to score each one 1–100** (100 = best early buy) with a **1–5 sentence rationale**. Optional **Telegram alerts** when a score clears a threshold |
+| **⚙️ Admin** | Every setting: concurrency, report dir, report language, **analysis engine**, per-window interval + pause, launchpad toggles, **scan-field customization**, Telegram alerts, runtime status & recent errors |
 
-**其它：**
-- **合约/地址一键复制** —— 所有 CA、创建者地址旁都有 `⧉` 复制按钮，点击后按钮变 ✓ 并弹出"已复制"提示。
-- **实时反馈** —— 每个窗口有状态药丸（🟢 扫描中·补全 45/100 / ✓ 空闲 / ⏸ 已暂停），顶栏显示"⏳ 扫描中 ②④"。
-- **状态持久化** —— 收藏、平台开关、并发、语言、引擎、扫描间隔都存到 `state.json`，重启自动恢复（窗口启动一律开启）。
-
----
-
-## 环境要求
-
-- **Python 3.9+**（自动创建 venv，装 `fastapi` / `uvicorn` / `httpx`）
-- **Clawby API Key** —— 到 <https://www.openclawby.com/> 注册获取（`pk_` 开头）
-- **深度分析（可选）：**
-  - **Google Chrome**（macOS，用于把 HTML 报告渲染成 PDF）—— 路径默认 `/Applications/Google Chrome.app`
-  - **Claude Code CLI** (`claude`) —— 需已登录；或
-  - **Codex CLI** (`codex`) —— 需已登录（`codex login`）或设置 `OPENAI_API_KEY`
-
-> 不做深度分析的话，只需 Python + Clawby Key 即可跑监控。
+**Also:**
+- **Bilingual UI (English / 中文)** — a language picker on first open; the whole interface switches instantly.
+- **Copy buttons** on every contract / address (`⧉` → ✓ + toast).
+- **Live feedback** — per-window status pills (scanning / idle / paused / scoring), an AI-score progress bar, the coin being scored right now, and a header activity indicator.
+- **Local persistence** — favorites and every setting live in `state.json` and are restored on restart.
+- **Startup safety** — windows boot **paused** (no request spike) and **at most 2 can monitor at once**.
 
 ---
 
-## 安装与配置
+## Requirements
+
+- **Python 3.9+** (a venv with `fastapi` / `uvicorn` / `httpx` is created automatically)
+- **Clawby API key** — sign up (free) at <https://www.openclawby.com/> (starts with `pk_`)
+- **For deep analysis / AI scoring (optional):**
+  - **Google Chrome** (macOS) to render report HTML → PDF
+  - **Claude Code CLI** (`claude`, logged in) **or** **Codex CLI** (`codex login` / `OPENAI_API_KEY`)
+- **For Telegram alerts (optional):** a Telegram bot token (from [@BotFather](https://t.me/BotFather))
+
+> Monitoring only needs Python + a Clawby key. The AI/PDF and Telegram pieces are opt-in.
+
+---
+
+## Install & run
 
 ```bash
-# 1. 进入目录
 cd Robinhood_Memescan
 
-# 2. 配置 API Key：复制模板并填入你的 Clawby Key
+# 1. configure your key
 cp .env.example .env
-#   编辑 .env，把 CLAWBY_API_KEY 换成你自己的 pk_xxx
+#    edit .env → set CLAWBY_API_KEY=pk_xxx
 
-# 3. 启动（首次会自动建 venv、装依赖）
+# 2. run (first run creates the venv + installs deps)
 bash run.sh
 ```
 
-启动后打开 **<http://127.0.0.1:8799>**。
+Then open **<http://127.0.0.1:8799>** and pick a language.
 
-`.env` 配置项：
-
+`.env`:
 ```ini
-CLAWBY_API_KEY=pk_your_key_here   # 必填，来自 openclawby.com
-PORT=8799                          # 可选，默认 8799
+CLAWBY_API_KEY=pk_your_key_here   # required, from openclawby.com
+PORT=8799                          # optional, default 8799
 ```
 
-其余设置在**管理窗口**里改（都会持久化）：
+Everything else is configured in the **Admin** window (and persisted):
 
-| 设置 | 说明 |
+| Setting | Notes |
 |---|---|
-| 并发请求数 | 1–100，默认 10（配合内置 6 req/s 限流，避免打爆 Clawby 配额） |
-| 报告输出目录 | 深度分析 PDF 的保存位置，默认 `./reports` |
-| 分析报告语言 | 中文 / English |
-| **🔬 深度分析引擎** | **Claude Code** 或 **Codex** |
-| 各窗口扫描间隔 | ① 默认 5s、② / ④ 默认 300s |
-| 发射平台工厂开关 | 逐个启用/停用要监听的发射平台 |
+| Concurrency | 1–100, default 10 (paired with a built-in ~6 req/s limiter) |
+| Report output dir | where analysis PDFs are saved, default `./reports` |
+| Report language | 中文 / English |
+| **Analysis engine** | **Claude Code** or **Codex** |
+| Per-window scan interval | ① 5s · ② / ④ 300s · ⑤ 600s |
+| Launchpad factory toggles | enable/disable the platforms window ① listens to |
+| Scan-field customization | turn individual fields off to skip their fetch (saves quota) |
+| Telegram alerts | token / chat_id / threshold / on-off |
 
 ---
 
-## 深度分析（🔬）
+## AI scoring (⑤)
 
-在 **③ 收藏**窗口点某个币的"🔬 分析"：
+An automated "early-stage opportunity" scorer:
 
-1. **抓取** —— Clawby 拉取该 CA 的链上数据（token 信息、创建者画像、持有人标签、转账活动、DEX 池）+ 当日 X 讨论；
-2. **本地 wiki** —— 汇总成 markdown 存到 `analysis/<ca>/wiki/`；
-3. **AI 分析** —— 调用本地 **Claude Code** 或 **Codex**（在管理窗口切换）读取 wiki，产出结构化 HTML 研究报告（快照 / 链上 / 持有人 / 舆情 / 风险 / 结论）；
-4. **PDF** —— Chrome 无头模式渲染成 PDF，存到报告目录。
+1. Every **10 min**, `dex_trending` (by market cap) selects memes with **mcap $100k–$5M** (~100 candidates).
+2. A **sequential background worker** processes them **one at a time**: gather data → store as an LLM wiki (`scores/<ca>/wiki/`) → call the **fast Claude/Codex model** to read the wiki and score.
+3. Output = **1–100** (100 = strongest early buy; 1 = highest risk) + a **1–5 sentence rationale**.
+4. Scores **persist** and update live; new / oldest-scored coins go first, then it keeps rolling.
 
-> 引擎切换：管理窗口 → "🔬 深度分析引擎" 选 Claude Code 或 Codex。两者需各自登录（`claude` 已登录 / `codex login`）。分析中窗口会显示"本地 claude 分析中"或"本地 codex 分析中"。
+> Dozens of coins can't all be re-scored within each 10-min tick (each is a separate LLM call), so it's "refresh data every 10 min + keep rolling through scoring". The engine follows the Admin Claude/Codex setting.
+
+## Telegram alerts
+
+Push an alert whenever a coin scores **≥ a threshold**. In Admin → **📲 Telegram**:
+
+1. Message your bot once in Telegram (so it can see your chat id).
+2. Paste the **Bot Token** → click **Refresh chat_id** to auto-detect your chat → select it.
+3. Set the **threshold** (default 80), enable it, click **Send test**.
+4. Afterwards every ≥-threshold score is pushed (once per coin; re-armed if it drops below then climbs back).
+
+> The token can be replaced anytime (shown masked). Telegram usually needs a proxy — the app reuses the proxy `run.sh` saved and retries transient drops.
+
+## Scan-field customization
+
+Admin → **Scan-field customization** toggles fields per window. **Turning a field off skips its fetch (saves Clawby quota, runs faster) and hides its column.** E.g. turn off "X buzz" and no window calls `x_search` anymore.
+
+## Deep analysis (🔬)
+
+From the Watchlist, click a coin's **🔬 Analyze**: gather its on-chain + X data → local wiki → local **Claude Code / Codex** reads it and writes an HTML report → Chrome renders it to a **PDF** in the report folder.
 
 ---
 
-## 数据来源（全部经 Clawby）
+## Data sources (all via Clawby)
 
-**`/api/relay` 数据接口：**
-`dex_trending`（榜单）· `dex_token_info`（单币全量：holders/价格/量/创建时间/平台/creator）· `dex_token_holders`（持有人榜）· `dexscreener_token_pools`（池流动性/ETH）· `dex_wallet_stats`（钱包 KOL/聪明钱标签）· `x_search`（X 舆情）
+**`/api/relay`:** `dex_trending` (ranking) · `dex_token_info` (per-CA snapshot: holders / price / vol / creation time / launchpad / creator) · `dex_token_holders` · `dexscreener_token_pools` (pool liquidity / ETH) · `dex_wallet_stats` (wallet KOL / smart-money tags) · `x_search` (X sentiment)
 
-**`/api/rpc` 链上（`chain=robinhood`）：**
-`eth_blockNumber` · `eth_getLogs`（工厂事件/转账）· `eth_call`（name/symbol）· `eth_getBlockByNumber` · `eth_getTransactionByHash` · `eth_getTransactionCount`（多链笔数）
+**`/api/rpc` (`chain=robinhood`):** `eth_blockNumber` · `eth_getLogs` (factory events / transfers) · `eth_call` (name/symbol) · `eth_getBlockByNumber` · `eth_getTransactionByHash` · `eth_getTransactionCount` (multi-chain)
 
-**唯一非 Clawby 调用：** HyperEVM 公共 RPC（`eth_getTransactionCount`，因 Clawby 无 hyperevm 链）。
+**Only non-Clawby call:** HyperEVM public RPC (`eth_getTransactionCount`, since Clawby has no hyperevm chain).
+
+Providers behind Clawby: **GMGN** (`dex_*`), **DexScreener** (`dexscreener_*`), **X** (`x_search`) — each has its own upstream rate limits.
 
 ---
 
-## 项目结构
+## Project structure
 
 ```
 Robinhood_Memescan/
-├── app.py          FastAPI 入口：REST 端点 + 状态持久化 + 生命周期
-├── monitors.py     四窗口逻辑（W1 发现 / W2·W4 榜单 / W3 收藏）+ 循环 + 控制
-├── sources.py      Clawby 数据封装（rh_trending / rh_token / rh_holders）
-├── clawby.py       Clawby 客户端：relay + rpc + 并发信号量 + 限流
-├── wallets.py      钱包 KOL/聪明钱打标签 + 缓存
-├── factories.py    各发射平台工厂地址 + 事件解码规则
-├── analyze.py      深度分析流水线（gather → wiki → claude/codex → PDF）
-├── util.py         共用工具 + 缓存 + 限流器 + 状态读写
-├── dashboard.html  前端（原生 JS 单页，四 Tab + 管理）
-├── run.sh          建 venv / 装依赖 / 处理代理 / 起 uvicorn
-├── .env.example    配置模板
-└── .env            你的实际配置（不入库）
+├── app.py          FastAPI app: REST endpoints + state persistence + lifespan
+├── monitors.py     five-window logic (discover / rank / watch / AI score) + loops + controls
+├── sources.py      Clawby data wrappers (rh_trending / rh_token / rh_holders / rh_by_mcap)
+├── clawby.py       Clawby client: relay + rpc + concurrency + rate limiter + ban backoff
+├── analyze.py      deep analysis + AI scoring (gather → wiki → claude/codex → PDF / score.json)
+├── tg.py           Telegram alerts
+├── wallets.py      wallet KOL / smart-money tagging + cache
+├── factories.py    launchpad factory addresses + event decode rules
+├── util.py         shared helpers + caches + rate limiter + state I/O
+├── dashboard.html  frontend (vanilla JS single page, 5 tabs + admin, i18n)
+├── run.sh          venv / deps / proxy handling / uvicorn
+├── .env.example    config template
+└── .env            your real config (git-ignored)
 ```
 
 ---
 
-## 说明与限制
+## Notes & limits
 
-- **Robinhood 链** = Arbitrum Orbit L2，chain id 4663。
-- **代理**：`run.sh` 会在启动时清除 http(s)/all 代理（app 的 httpx 必须无代理直连），同时把原代理存到 `SAVED_*_PROXY`，供 `claude`/`codex` 子进程使用。
-- **首屏**：W2/W4 冷启动需 ~1–2 分钟补全（受 6 req/s 限流约束），窗口会显示进度，不是卡死。
-- **KOL/聪明钱**：靠 GMGN 钱包标签，某币 top 持有人常是池子/大户，命中率天然偏低（常为 0）。
-- **缓存/清理**：报告与分析目录仅保留最新 25 份。
+- **Robinhood chain** = Arbitrum Orbit L2, chain id 4663.
+- **Proxy:** `run.sh` clears http(s)/all proxy at startup (the app's httpx must connect directly) but saves it to `SAVED_*_PROXY` for the `claude` / `codex` subprocesses and Telegram.
+- **First load:** ② / ④ take ~1–2 min to enrich on cold start (bounded by the rate limiter); the window shows progress, it isn't stuck.
+- **Upstream rate limits:** heavy bursts (many restarts, aggressive polling) can get a provider (usually GMGN) to temporarily rate-limit-ban the IP. The client detects it (by response body, any HTTP status), backs off with an escalating cooldown, shows a "rate-limited, resets in Xs" banner, and auto-recovers. Normal 2-window use (~1 req/s) stays well under the limits.
+- **KOL / smart-money** relies on GMGN wallet tags; a coin's top holders are often pools / whales, so counts are frequently 0.
+- Reports / analysis / score dirs are pruned to the newest entries.
 
-*本工具仅供研究，不构成投资建议。*
+*This tool is for research only — not investment advice.*
