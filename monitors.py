@@ -34,9 +34,7 @@ W4_POOL = 200          # volume-ranked candidates to inspect for the "created <=
 W4_LIMIT = 100         # top-N (by volume) among the recent ones to display
 W4_MAX_AGE = 3 * 86400  # 3 days
 W5_INTERVAL = 600      # candidate-list refresh cadence (10 min)
-W5_MCAP_MIN = 100_000
-W5_MCAP_MAX = 5_000_000
-W5_POOL = 120          # how many $100k-$5M coins to keep in the scoring queue
+W5_POOL = 120          # how many in-band coins to keep in the scoring queue
 TX_CHAINS = ["robinhood", "eth", "bsc", "base"]   # via Clawby RPC; hyperevm separate
 SEL_NAME = "0x06fdde03"
 SEL_SYMBOL = "0x95d89b41"
@@ -48,8 +46,17 @@ W2 = {"enabled": True, "interval": W2_INTERVAL, "tokens": {}, "rank": [], "last"
 W3 = {"enabled": True, "watch": {}, "last": None, "running": False, "phase": ""}
 W4 = {"enabled": True, "interval": W4_INTERVAL, "tokens": {}, "rank": [], "last": None,
       "running": False, "phase": "", "done": 0, "total": 0}
-W5 = {"enabled": True, "interval": W5_INTERVAL, "tokens": {}, "rank": [], "last": None,
-      "running": False, "phase": "", "scoring": None}
+def _new_scorer(chain, mcap_min=100_000, mcap_max=5_000_000):
+    return {"chain": chain, "enabled": False, "interval": W5_INTERVAL,
+            "mcap_min": mcap_min, "mcap_max": mcap_max, "max_age_days": 0,   # 0 = no age filter
+            "tokens": {}, "rank": [], "last": None, "running": False, "phase": "", "scoring": None}
+
+
+# AI scoring windows — one per chain (⑤ robinhood, ⑥ BSC, ⑦ Base)
+W5 = _new_scorer("robinhood")
+W6 = _new_scorer("bsc")
+W7 = _new_scorer("base")
+SCORERS = {"w5": W5, "w6": W6, "w7": W7}
 
 # Per-window scannable-field toggles (admin-customizable). Disabling a field skips its
 # fetch (saves quota + time) and hides its column. Fields that arrive free on the
@@ -379,43 +386,52 @@ async def w4_refresh():
         W4["running"] = False
 
 
-# ============================ W5 : AI scoring (mcap $100k-$5M) ============================
-async def w5_refresh():
-    """Refresh the candidate list (mcap band) + basic fields; keep existing scores."""
-    if W5["running"]:
+# ==================== AI scoring windows (⑤ robinhood / ⑥ BSC / ⑦ Base) ====================
+def _mc(v):
+    return ("$%.1fM" % (v / 1e6)) if v >= 1e6 else ("$%.0fK" % (v / 1e3))
+
+
+async def score_refresh(S):
+    """Refresh a scorer's candidate list (mcap band + optional age filter); keep scores."""
+    if S["running"]:
         return
-    W5["running"] = True
-    W5["phase"] = "拉取候选(市值 $100k-$5M)"
+    S["running"] = True
+    S["phase"] = "拉取候选(市值 %s-%s)" % (_mc(S["mcap_min"]), _mc(S["mcap_max"]))
     try:
-        pool = await sources.rh_by_mcap(W5_MCAP_MIN, W5_MCAP_MAX, W5_POOL)
+        pool = await sources.rh_by_mcap(S["mcap_min"], S["mcap_max"], W5_POOL, chain=S["chain"])
         if not pool:
-            util.logerr("w5: mcap band empty")
-            W5["phase"] = "候选为空，稍后重试"
+            util.logerr("%s: mcap band empty" % S["chain"])
+            S["phase"] = "候选为空，稍后重试"
             return
+        if S.get("max_age_days"):                          # optional creation-time filter (item 1)
+            cutoff = time.time() - S["max_age_days"] * 86400
+            pool = [t for t in pool if t.get("created_ts") and t["created_ts"] >= cutoff]
         keep = set()
         for t in pool:
             keep.add(t["ca"])
-            m = W5["tokens"].get(t["ca"], {})
-            for k in ("ca", "symbol", "name", "icon", "platform", "mcap", "price", "volume24", "holders", "created_ts"):
+            m = S["tokens"].get(t["ca"], {})
+            for k in ("ca", "symbol", "name", "icon", "platform", "mcap", "price",
+                      "volume24", "holders", "transfers", "created_ts"):
                 m[k] = t.get(k)
+            m["chain"] = S["chain"]
             for k, dv in (("score", None), ("rationale", None), ("scored_at", None),
                           ("scoring", False), ("error", None)):
                 m.setdefault(k, dv)
-            W5["tokens"][t["ca"]] = m
-        for ca in list(W5["tokens"].keys()):               # drop coins that left the band
+            S["tokens"][t["ca"]] = m
+        for ca in list(S["tokens"].keys()):                # drop coins that left the band
             if ca not in keep:
-                W5["tokens"].pop(ca, None)
-        W5["rank"] = [t["ca"] for t in pool]               # default order: mcap desc
-        W5["last"] = now()
-        W5["phase"] = "候选 %d 个 · 滚动评分中" % len(pool)
+                S["tokens"].pop(ca, None)
+        S["rank"] = [t["ca"] for t in pool]                # default order: mcap desc
+        S["last"] = now()
+        S["phase"] = "候选 %d 个 · 滚动评分中" % len(pool)
     finally:
-        W5["running"] = False
+        S["running"] = False
 
 
-def _w5_next():
+def _score_next(S):
     """The candidate most in need of a score: never-scored first, then oldest."""
     best, bkey = None, None
-    for ca, m in W5["tokens"].items():
+    for ca, m in S["tokens"].items():
         if m.get("scoring"):
             continue
         key = (0, 0.0) if m.get("scored_at") is None else (1, m["scored_at"])
@@ -424,22 +440,22 @@ def _w5_next():
     return best
 
 
-async def w5_score_next():
+async def score_next(S):
     """Score ONE candidate (sequential rolling worker). Returns True if it ran."""
-    ca = _w5_next()
+    ca = _score_next(S)
     if not ca:
         return False
-    m = W5["tokens"].get(ca)
+    m = S["tokens"].get(ca)
     if not m:
         return False
     m["scoring"] = True
-    W5["scoring"] = ca
-    W5["phase"] = "评分中 %s" % (m.get("symbol") or ca[:8])
+    S["scoring"] = ca
+    S["phase"] = "评分中 %s" % (m.get("symbol") or ca[:8])
     try:
-        res = await analyze.score_token(ca, dict(SCAN_FIELDS["w5"]))
+        res = await analyze.score_token(ca, dict(SCAN_FIELDS["w5"]), chain=S["chain"])
         if res:
             m["score"], m["rationale"], m["error"] = res["score"], res["rationale"], None
-            await tg.notify_score(m)                  # Telegram alert if score >= threshold
+            await tg.notify_score(m)                        # Telegram alert if score >= threshold
         else:
             m["error"] = "评分失败(未产出)"
     except Exception as e:  # noqa: BLE001
@@ -447,7 +463,7 @@ async def w5_score_next():
     finally:
         m["scored_at"] = time.time()
         m["scoring"] = False
-        W5["scoring"] = None
+        S["scoring"] = None
     return True
 
 
@@ -506,12 +522,27 @@ async def _w3_refresh_one(ca, w):
 
 
 # ============================ controls ============================
-ALL_WINDOWS = ("w1", "w2", "w3", "w4", "w5")
+ALL_WINDOWS = ("w1", "w2", "w3", "w4", "w5", "w6", "w7")
 MAX_ACTIVE = 2                                         # at most 2 windows may monitor at once
 
 
 def _wmap():
-    return {"w1": W1, "w2": W2, "w3": W3, "w4": W4, "w5": W5}
+    return {"w1": W1, "w2": W2, "w3": W3, "w4": W4, "w5": W5, "w6": W6, "w7": W7}
+
+
+def set_score_config(win, mcap_min=None, mcap_max=None, max_age_days=None):
+    S = SCORERS.get(win)
+    if S is None:
+        return False
+    if mcap_min is not None:
+        S["mcap_min"] = max(0, int(mcap_min))
+    if mcap_max is not None:
+        S["mcap_max"] = max(S["mcap_min"] + 1, int(mcap_max))
+    if max_age_days is not None:
+        S["max_age_days"] = max(0, float(max_age_days))
+    S["rank"], S["tokens"] = [], {}                    # band changed → clear and re-pull immediately
+    S["force"] = True
+    return True
 
 
 def enabled_count():
@@ -521,6 +552,8 @@ def enabled_count():
 def set_enabled(win, val):
     w = _wmap().get(win)
     if w is not None:
+        if val and not w["enabled"]:      # paused → re-enabled: re-pull the list immediately
+            w["force"] = True
         w["enabled"] = bool(val)
         return True
     return False
@@ -541,8 +574,8 @@ def platforms_state():
 
 
 def set_interval(win, seconds):
-    floors = {"w1": 2, "w2": 15, "w4": 30, "w5": 60}
-    w = {"w1": W1, "w2": W2, "w4": W4, "w5": W5}.get(win)
+    floors = {"w1": 2, "w2": 15, "w4": 30, "w5": 60, "w6": 60, "w7": 60}
+    w = {"w1": W1, "w2": W2, "w4": W4, "w5": W5, "w6": W6, "w7": W7}.get(win)
     if w is not None:
         w["interval"] = max(floors[win], int(seconds))
         return True
@@ -550,7 +583,7 @@ def set_interval(win, seconds):
 
 
 def _symbol_for(ca):
-    for store in (W1["tokens"], W2["tokens"], W4["tokens"]):
+    for store in (W1["tokens"], W2["tokens"], W4["tokens"], W5["tokens"], W6["tokens"], W7["tokens"]):
         if ca in store:
             return store[ca].get("symbol")
     return None
@@ -574,33 +607,47 @@ def set_watch_interval(ca, interval):
 
 
 # ============================ loops ============================
-async def w1_loop():
+def _list_empty(W):
+    return not (W["rank"] if "rank" in W else W.get("tokens"))
+
+
+async def _list_loop(W, refresh, floor, label, warmup=0, heal_empty=True):
+    """Pull a window's list on a cadence. The window's `interval` IS the list-pull
+    frequency (scheduled from the START of each pull, not start+duration). Re-enabling
+    a paused window sets W['force'] → an immediate re-pull on the next tick (~2s)."""
+    if warmup:
+        await asyncio.sleep(warmup)
+    W["_due"] = 0.0
     while True:
+        if W["enabled"] and (W.get("force") or time.monotonic() >= W.get("_due", 0.0)):
+            W["force"] = False
+            W["_due"] = time.monotonic() + max(floor, W["interval"])   # schedule next pull from START
+            try:
+                await refresh()
+                if heal_empty and _list_empty(W):      # empty (likely a fetch blip) → retry soon
+                    W["_due"] = time.monotonic() + 15
+            except Exception as e:  # noqa: BLE001
+                STATUS["error"] = "%s: %s" % (label, e)
+                W["_due"] = time.monotonic() + 15
+        await asyncio.sleep(2)                          # short tick → responsive to enable / force
+
+
+async def w1_loop():
+    async def _refresh():
+        W1["running"] = True
+        W1["phase"] = "扫描工厂事件"
         try:
-            if W1["enabled"]:
-                W1["running"] = True
-                W1["phase"] = "扫描工厂事件"
-                await w1_discover()
-                W1["phase"] = "补全创建者画像"
-                await w1_enrich_creators()
-                W1["phase"] = "空闲"
-        except Exception as e:  # noqa: BLE001
-            STATUS["error"] = "w1: %s" % e
+            await w1_discover()
+            W1["phase"] = "补全创建者画像"
+            await w1_enrich_creators()
+            W1["phase"] = "空闲"
         finally:
             W1["running"] = False
-        await asyncio.sleep(max(2, W1["interval"]))
+    await _list_loop(W1, _refresh, 2, "w1", heal_empty=False)   # empty W1 = no new launches, keep polling
 
 
 async def w2_loop():
-    await asyncio.sleep(8)
-    while True:
-        try:
-            if W2["enabled"]:
-                await w2_refresh()
-        except Exception as e:  # noqa: BLE001
-            STATUS["error"] = "w2: %s" % e
-        # self-heal: retry soon while the window is still empty, else use the interval
-        await asyncio.sleep(15 if not W2["rank"] else max(15, W2["interval"]))
+    await _list_loop(W2, w2_refresh, 15, "w2", warmup=8)
 
 
 async def w3_loop():
@@ -614,35 +661,20 @@ async def w3_loop():
 
 
 async def w4_loop():
-    await asyncio.sleep(12)                       # let W1/W2 warm up first (shares the rate budget)
-    while True:
-        try:
-            if W4["enabled"]:
-                await w4_refresh()
-        except Exception as e:  # noqa: BLE001
-            STATUS["error"] = "w4: %s" % e
-        # self-heal like W2: retry soon while still empty, else honour the interval
-        await asyncio.sleep(15 if not W4["rank"] else max(30, W4["interval"]))
+    await _list_loop(W4, w4_refresh, 30, "w4", warmup=12)
 
 
-async def w5_loop():
-    await asyncio.sleep(20)                        # candidate-list refresh (every ~10 min)
-    while True:
-        try:
-            if W5["enabled"]:
-                await w5_refresh()
-        except Exception as e:  # noqa: BLE001
-            STATUS["error"] = "w5: %s" % e
-        await asyncio.sleep(15 if not W5["rank"] else max(60, W5["interval"]))
+async def score_loop(S, warmup):
+    await _list_loop(S, lambda: score_refresh(S), 60, S["chain"], warmup=warmup)
 
 
-async def w5_score_loop():
-    await asyncio.sleep(35)                        # rolling sequential AI scorer (one coin at a time)
+async def score_work_loop(S, warmup):
+    await asyncio.sleep(warmup)                    # rolling sequential AI scorer (one coin at a time)
     while True:
         did = False
         try:
-            if W5["enabled"] and W5["tokens"] and not clawby.banned_for():   # skip scoring during a cooldown
-                did = await w5_score_next()
+            if S["enabled"] and S["tokens"] and not clawby.banned_for():   # skip scoring during a cooldown
+                did = await score_next(S)
         except Exception as e:  # noqa: BLE001
-            STATUS["error"] = "w5score: %s" % e
+            STATUS["error"] = "%s-score: %s" % (S["chain"], e)
         await asyncio.sleep(3 if did else 12)

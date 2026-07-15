@@ -2,9 +2,9 @@
 
 **English** · [中文](README.zh-CN.md)
 
-A real-time **meme-coin monitor & AI scoring dashboard for the Robinhood chain**, built entirely on the **[Clawby](https://www.openclawby.com/) API**. Five monitor windows + an admin panel; it gathers on-chain / holder / trading / social data and uses your local **Claude Code / Codex** to produce PDF research reports and 1–100 investment scores — with optional Telegram alerts.
+A real-time **meme-coin monitor & AI scoring dashboard**, built entirely on the **[Clawby](https://www.openclawby.com/) API**. Seven monitor windows + a custom-report window + an admin panel. It watches Robinhood launches, ranks the hottest memes, and runs **automated AI scoring on Robinhood, BSC and Base**, plus one-click **illustrated PDF research reports** — all powered by your local **Claude Code / Codex**, with optional Telegram alerts.
 
-> All data comes from Clawby (`dex_trending` / `dex_token_info` / `dex_token_holders` / `dexscreener_*` / `x_search` + on-chain RPC). No Blockscout needed.
+> All data comes from Clawby (`dex_trending` / `dex_token_info` / `dex_token_holders` / `dex_token_kline` / `dex_token_traders` / `dexscreener_*` / `x_search` + on-chain RPC). No Blockscout needed.
 
 ---
 
@@ -16,8 +16,11 @@ A real-time **meme-coin monitor & AI scoring dashboard for the Robinhood chain**
 | **② Top100** | Top 100 memes by 24h volume: platform / price / mcap / 24h vol / holders / **txns (24h swaps)** / liquidity / ETH-in-pool / X buzz |
 | **③ Watchlist** | Favorite any CA, per-CA refresh interval; adds **KOL / smart-money counts** (sampled top holders) and a one-click **🔬 deep analysis → PDF** |
 | **④ New ≤3 days** | Only coins whose **real on-chain creation time ≤ 3 days**, top 100 by volume (creation time is calibrated on-chain, so "old coins that just graduated" are excluded) |
-| **⑤ AI Score** | Every 10 min scans memes with **mcap $100k–$5M**, stores their on-chain / holder / trading / social data as an LLM wiki, then uses **Claude Code / Codex to score each one 1–100** (100 = best early buy) with a **1–5 sentence rationale**. Optional **Telegram alerts** when a score clears a threshold |
-| **⚙️ Admin** | Every setting: concurrency, report dir, report language, **analysis engine**, per-window interval + pause, launchpad toggles, **scan-field customization**, Telegram alerts, runtime status & recent errors |
+| **⑤ AI · Robinhood** | Every 10 min scans memes in a **configurable market-cap band** (default $100k–$5M, optional "created ≤ N days" filter), stores each one's on-chain / holder / trading / social data as an LLM wiki, then uses **Claude Code / Codex to score it 1–100** (100 = best early buy) with a **1–5 sentence rationale** + its **24h txn count**. Optional **Telegram alert** when a score clears a threshold |
+| **⑥ AI · BSC** | The same automated AI scoring for **BSC** memecoins (own mcap band / age filter) |
+| **⑦ AI · Base** | The same automated AI scoring for **Base** memecoins (own mcap band / age filter) |
+| **⑧ Custom Report** | Pick a chain (Robinhood / BSC / Base) + paste a contract → Clawby gathers **all RPC / holder / trade / holder-relationship / X data** → generates a full **illustrated PDF** with a price line chart, volume bars, a holder-distribution doughnut, a timeline and the total tx count |
+| **⚙️ Admin** | Every setting: concurrency, report dir, report language, **analysis engine**, per-window interval + pause, **per-scorer mcap band + age filter**, launchpad toggles, **scan-field customization**, Telegram alerts, runtime status & recent errors |
 
 **Also:**
 - **Bilingual UI (English / 中文)** — a language picker on first open; the whole interface switches instantly.
@@ -70,23 +73,35 @@ Everything else is configured in the **Admin** window (and persisted):
 | Report output dir | where analysis PDFs are saved, default `./reports` |
 | Report language | 中文 / English |
 | **Analysis engine** | **Claude Code** or **Codex** |
-| Per-window scan interval | ① 5s · ② / ④ 300s · ⑤ 600s |
+| Per-window scan interval | ① 5s · ② / ④ 300s · ⑤⑥⑦ 600s |
+| **Per-scorer mcap band + age** | ⑤⑥⑦ each get their own market-cap min/max and "created ≤ N days" filter |
 | Launchpad factory toggles | enable/disable the platforms window ① listens to |
 | Scan-field customization | turn individual fields off to skip their fetch (saves quota) |
 | Telegram alerts | token / chat_id / threshold / on-off |
 
 ---
 
-## AI scoring (⑤)
+## AI scoring (⑤ Robinhood · ⑥ BSC · ⑦ Base)
 
-An automated "early-stage opportunity" scorer:
+Three automated "early-stage opportunity" scorers, one per chain:
 
-1. Every **10 min**, `dex_trending` (by market cap) selects memes with **mcap $100k–$5M** (~100 candidates).
-2. A **sequential background worker** processes them **one at a time**: gather data → store as an LLM wiki (`scores/<ca>/wiki/`) → call the **fast Claude/Codex model** to read the wiki and score.
-3. Output = **1–100** (100 = strongest early buy; 1 = highest risk) + a **1–5 sentence rationale**.
+1. Every **10 min**, `dex_trending` selects that chain's memes in the configured **market-cap band** (default $100k–$5M; you can also require "created ≤ N days").
+2. A **sequential background worker** processes them **one at a time**: gather data → store as an LLM wiki (`scores/<chain>_<ca>/wiki/`) → call the **fast Claude/Codex model** to read the wiki and score.
+3. Output = **1–100** (100 = strongest early buy; 1 = highest risk) + a **1–5 sentence rationale** + the coin's **24h txn count**.
 4. Scores **persist** and update live; new / oldest-scored coins go first, then it keeps rolling.
 
-> Dozens of coins can't all be re-scored within each 10-min tick (each is a separate LLM call), so it's "refresh data every 10 min + keep rolling through scoring". The engine follows the Admin Claude/Codex setting.
+> Dozens of coins can't all be re-scored within each 10-min tick (each is a separate LLM call), so it's "refresh data every 10 min + keep rolling through scoring". The engine follows the Admin Claude/Codex setting. Only 2 windows monitor at once, so opening ⑤ + ⑥ (say) runs Robinhood and BSC scoring in parallel.
+
+## Custom deep report (⑧)
+
+Pick a chain + paste a contract address → the app gathers **everything** for that token and asks the AI to write a full illustrated report:
+
+- On-chain: total tx (RPC-counted from the deploy block), 24h tx, unique senders/receivers, deploy block
+- Holders: full top-holder table + a **distribution doughnut**, plus **relationship signals** (top-10 concentration, sniper / bundler / fresh-wallet / dev-hold rates)
+- Trading: top traders by realized PnL; a **price line chart** + **volume bars** from the OHLC series; an event **timeline**
+- Social: recent X posts
+
+The charts are pre-built server-side (Chart.js, bundled `vendor/chart.min.js` — no CDN), then Chrome renders it to a **multi-page PDF** (~5–7 min for a full report; the window shows live progress).
 
 ## Telegram alerts
 
@@ -111,13 +126,13 @@ From the Watchlist, click a coin's **🔬 Analyze**: gather its on-chain + X dat
 
 ## Data sources (all via Clawby)
 
-**`/api/relay`:** `dex_trending` (ranking) · `dex_token_info` (per-CA snapshot: holders / price / vol / creation time / launchpad / creator) · `dex_token_holders` · `dexscreener_token_pools` (pool liquidity / ETH) · `dex_wallet_stats` (wallet KOL / smart-money tags) · `x_search` (X sentiment)
+**`/api/relay`:** `dex_trending` (ranking, any of robinhood/bsc/base) · `dex_token_info` (per-CA snapshot: holders / price / vol / creation time / launchpad / creator / relationship stats) · `dex_token_holders` · `dex_token_kline` (OHLC for charts) · `dex_token_traders` (top traders) · `dexscreener_token_pools` (pool liquidity / ETH) · `dex_wallet_stats` (wallet KOL / smart-money tags) · `x_search` (X sentiment)
 
-**`/api/rpc` (`chain=robinhood`):** `eth_blockNumber` · `eth_getLogs` (factory events / transfers) · `eth_call` (name/symbol) · `eth_getBlockByNumber` · `eth_getTransactionByHash` · `eth_getTransactionCount` (multi-chain)
+**`/api/rpc` (`chain` = robinhood / bsc / base):** `eth_blockNumber` · `eth_getLogs` (factory events / transfer counts) · `eth_call` · `eth_getCode` (binary-search the deploy block) · `eth_getBlockByNumber` · `eth_getTransactionByHash` · `eth_getTransactionCount`
 
 **Only non-Clawby call:** HyperEVM public RPC (`eth_getTransactionCount`, since Clawby has no hyperevm chain).
 
-Providers behind Clawby: **GMGN** (`dex_*`), **DexScreener** (`dexscreener_*`), **X** (`x_search`) — each has its own upstream rate limits.
+Providers behind Clawby: **GMGN** (`dex_*`, covers robinhood/bsc/base), **DexScreener** (`dexscreener_*`), **X** (`x_search`) — each has its own upstream rate limits.
 
 ---
 
@@ -126,15 +141,16 @@ Providers behind Clawby: **GMGN** (`dex_*`), **DexScreener** (`dexscreener_*`), 
 ```
 Robinhood_Memescan/
 ├── app.py          FastAPI app: REST endpoints + state persistence + lifespan
-├── monitors.py     five-window logic (discover / rank / watch / AI score) + loops + controls
-├── sources.py      Clawby data wrappers (rh_trending / rh_token / rh_holders / rh_by_mcap)
+├── monitors.py     window logic (discover / rank / watch / multi-chain AI scorers) + loops + controls
+├── sources.py      Clawby data wrappers (rh_trending / rh_token / rh_holders / rh_by_mcap / rh_kline / rh_traders), chain-aware
 ├── clawby.py       Clawby client: relay + rpc + concurrency + rate limiter + ban backoff
-├── analyze.py      deep analysis + AI scoring (gather → wiki → claude/codex → PDF / score.json)
+├── analyze.py      AI scoring + deep/custom reports (gather → wiki → charts → claude/codex → PDF)
 ├── tg.py           Telegram alerts
 ├── wallets.py      wallet KOL / smart-money tagging + cache
 ├── factories.py    launchpad factory addresses + event decode rules
 ├── util.py         shared helpers + caches + rate limiter + state I/O
-├── dashboard.html  frontend (vanilla JS single page, 5 tabs + admin, i18n)
+├── dashboard.html  frontend (vanilla JS single page, 7 windows + report + admin, i18n)
+├── vendor/chart.min.js   bundled Chart.js for the report charts (no CDN at render time)
 ├── run.sh          venv / deps / proxy handling / uvicorn
 ├── .env.example    config template
 └── .env            your real config (git-ignored)

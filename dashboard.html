@@ -88,7 +88,10 @@
   <button class="tabbtn" id="tab-w2" onclick="switchTab('w2')">② Top100</button>
   <button class="tabbtn" id="tab-w3" onclick="switchTab('w3')">③ 收藏</button>
   <button class="tabbtn" id="tab-w4" onclick="switchTab('w4')">④ 3天新币</button>
-  <button class="tabbtn" id="tab-w5" onclick="switchTab('w5')">⑤ AI评分</button>
+  <button class="tabbtn" id="tab-w5" onclick="switchTab('w5')">⑤ AI·RH</button>
+  <button class="tabbtn" id="tab-w6" onclick="switchTab('w6')">⑥ AI·BSC</button>
+  <button class="tabbtn" id="tab-w7" onclick="switchTab('w7')">⑦ AI·Base</button>
+  <button class="tabbtn" id="tab-w8" onclick="switchTab('w8')">⑧ 深度报告</button>
   <button class="tabbtn" id="tab-admin" onclick="switchTab('admin')">⚙️ 管理</button>
 </header>
 
@@ -109,9 +112,33 @@
   <div class="pbody"><table><thead><tr id="head-w4"></tr></thead><tbody id="body-w4"></tbody></table></div></div>
 </div>
 <div class="view" id="view-w5" hidden>
-  <div class="panel"><div class="phead"><span class="t">⑤ AI 评分 · 市值 $100k–$5M</span><span class="pill" id="pill-w5">—</span><span class="grow"></span><span class="meta" id="ph-w5"></span><button class="ghost sm" id="pause-w5" onclick="toggleWin('w5')"></button></div>
+  <div class="panel"><div class="phead"><span class="t">⑤ AI 评分 · Robinhood</span><span class="pill" id="pill-w5">—</span><span class="grow"></span><span class="meta" id="ph-w5"></span><button class="ghost sm" id="pause-w5" onclick="toggleWin('w5')"></button></div>
   <div class="prog" id="prog-w5"><div class="track"><div class="fill"></div></div><span class="lbl"></span></div>
   <div class="pbody"><table><thead><tr id="head-w5"></tr></thead><tbody id="body-w5"></tbody></table></div></div>
+</div>
+<div class="view" id="view-w6" hidden>
+  <div class="panel"><div class="phead"><span class="t">⑥ AI 评分 · BSC</span><span class="pill" id="pill-w6">—</span><span class="grow"></span><span class="meta" id="ph-w6"></span><button class="ghost sm" id="pause-w6" onclick="toggleWin('w6')"></button></div>
+  <div class="prog" id="prog-w6"><div class="track"><div class="fill"></div></div><span class="lbl"></span></div>
+  <div class="pbody"><table><thead><tr id="head-w6"></tr></thead><tbody id="body-w6"></tbody></table></div></div>
+</div>
+<div class="view" id="view-w7" hidden>
+  <div class="panel"><div class="phead"><span class="t">⑦ AI 评分 · Base</span><span class="pill" id="pill-w7">—</span><span class="grow"></span><span class="meta" id="ph-w7"></span><button class="ghost sm" id="pause-w7" onclick="toggleWin('w7')"></button></div>
+  <div class="prog" id="prog-w7"><div class="track"><div class="fill"></div></div><span class="lbl"></span></div>
+  <div class="pbody"><table><thead><tr id="head-w7"></tr></thead><tbody id="body-w7"></tbody></table></div></div>
+</div>
+<div class="view" id="view-w8" hidden>
+  <div class="panel" style="max-width:820px">
+    <div class="phead"><span class="t">⑧ 自定义深度报告</span></div>
+    <div style="padding:16px 18px">
+      <p class="dim" id="w8-intro">选择链 + 输入合约地址 → 用 Clawby 抓取全部 RPC / 持有人 / 交易记录 / 持有者关联 / X 数据 → 生成含折线图、时间线、分布图的完整 PDF 报告。</p>
+      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:14px 0">
+        <select class="in" id="rep-chain"><option value="robinhood">Robinhood</option><option value="bsc">BSC</option><option value="base">Base</option></select>
+        <input class="in" id="rep-ca" placeholder="0x… 合约地址" style="width:420px">
+        <button id="w8-btn" onclick="genReport()">🔬 生成报告</button>
+      </div>
+      <div id="rep-status" style="margin-top:8px"></div>
+    </div>
+  </div>
 </div>
 <div class="view" id="view-admin" hidden></div>
 <div id="toast"></div>
@@ -126,10 +153,12 @@
 
 <script>
 const EXP="https://robinhoodchain.blockscout.com";
-const TABS=["w1","w2","w3","w4","w5"];
-const MARK={w1:"①",w2:"②",w3:"③",w4:"④",w5:"⑤"};
+const TABS=["w1","w2","w3","w4","w5","w6","w7"];   // data-table windows (⑧ custom + ⚙️ admin handled separately)
+const SCOREWINS=["w5","w6","w7"];
+const MARK={w1:"①",w2:"②",w3:"③",w4:"④",w5:"⑤",w6:"⑥",w7:"⑦",w8:"⑧"};
 const FLAB={kol:"创建者KOL",txcounts:"多链笔数",holders:"holders",transfers:"交易数",liquidity:"流动性",eth:"池ETH",x:"X舆情",kolsmart:"KOL/聪明钱",tx:"链上tx",trading:"交易记录",pools:"池子"};
 const WLAB={w1:"① 新发射",w2:"② Top100",w3:"③ 收藏",w4:"④ 3天新币",w5:"⑤ AI评分·采集项"};
+const SCORE_LABEL={w5:"⑤ Robinhood",w6:"⑥ BSC",w7:"⑦ Base"};
 // ---------- i18n (key = Chinese; value = English) ----------
 let LANG=localStorage.getItem("ui_lang");
 const I18N={
@@ -152,7 +181,10 @@ Object.assign(I18N,{
  "未找到 chat（先在 Telegram 给你的 bot 发一条消息，再点刷新）":"No chat found — message your bot in Telegram first, then Refresh","点击选用: ":"Pick: ",
  "⑤ AI评分·采集项":"⑤ AI Score · collected","创建者KOL":"Creator KOL","多链笔数":"Multi-chain tx","KOL/聪明钱":"KOL/Smart$","链上tx":"On-chain tx","交易记录":"Trading","池子":"Pools",
  "扫描中":"Scanning","✓KOL":"✓KOL","收藏":"Favorite","移除":"Remove","监控频率(秒)":"Refresh interval (s)","加入③收藏，监控频率（秒）：":"Add to ③ Watchlist, refresh interval (seconds):",
- "滚动评分":"Rolling","共":"of","正在评分":"Scoring now","滚动评分中":"Rolling scoring…","⏳ 拉取候选中…（市值 $100k–$5M，随后滚动评分）":"⏳ Fetching candidates… (mcap $100k–$5M, then rolling scoring)","上游限流,剩":"Rate-limited, resets in"});
+ "滚动评分":"Rolling","共":"of","正在评分":"Scoring now","滚动评分中":"Rolling scoring…","⏳ 拉取候选中…（市值 $100k–$5M，随后滚动评分）":"⏳ Fetching candidates… (mcap $100k–$5M, then rolling scoring)","上游限流,剩":"Rate-limited, resets in",
+ "⑧ 深度报告":"⑧ Report","⑤ AI 评分 · Robinhood":"⑤ AI Score · Robinhood","⑥ AI 评分 · BSC":"⑥ AI Score · BSC","⑦ AI 评分 · Base":"⑦ AI Score · Base","⑧ 自定义深度报告":"⑧ Custom deep report",
+ "选择链 + 输入合约地址 → 用 Clawby 抓取全部 RPC / 持有人 / 交易记录 / 持有者关联 / X 数据 → 生成含折线图、时间线、分布图的完整 PDF 报告。":"Pick a chain + enter a contract address → Clawby gathers all RPC / holder / trade / holder-relationship / X data → generates a full PDF report with line charts, a timeline and distribution charts.",
+ "24h交易数":"24h txns","请输入有效的合约地址(0x…40位)":"Enter a valid contract address (0x… 40 hex)","已启动，正在抓取数据…":"Started, gathering data…","深度报告已启动":"Report started","打开 PDF 报告":"Open PDF report","重新生成":"Regenerate","失败":"failed","含图表的报告约需 3-8 分钟":"an illustrated report takes ~3-8 min","生成报告":"Generate report","AI 评分器 · 市值 / 新旧筛选":"AI scorers · mcap / age filter","每个链可自定义评分的市值区间;创建时间(天,0=不限)":"Per-chain scoring mcap band; creation age (days, 0 = no limit)","天":"d","已更新":"updated","处理中":"working"});
 function t(s){ return LANG==="en" ? (I18N[s]!==undefined?I18N[s]:s) : s; }
 const PHRASES=[["拉取候选(市值 $100k-$5M)","Fetching candidates (mcap $100k-$5M)"],["候选为空，稍后重试","No candidates, retrying"],["榜单为空，稍后重试","Board empty, retrying"],["个 · 滚动评分中"," · rolling scoring"],["个3天内新币"," coins ≤3d"],["拉取交易量榜单","Fetching volume board"],["补全指标","Enriching"],["校准创建时间","Calibrating age"],["扫描工厂事件","Scanning factory events"],["补全创建者画像","Enriching creators"],["刷新收藏","Refreshing watch"],["评分中","Scoring"],["候选","Candidates "],["筛出","Filtered "],["完成","Done"],["空闲","Idle"],[" 个"," "]];
 function tphase(s){ if(!s||LANG!=="en")return s; for(const[a,b]of PHRASES)s=s.split(a).join(b); return s; }
@@ -160,9 +192,11 @@ function showModal(html){ document.getElementById("modal-body").innerHTML=html; 
 function closeModal(){ document.getElementById("modal").hidden=true; }
 function limitModal(){ showModal(`<h3>⚠️ ${t("最多同时监控 2 个窗口")}</h3><p>${t("请先暂停一个正在监控的窗口，再开启新的。这样做是为了控制接口并发、保护你的 Clawby 配额。")}</p><div style="text-align:right;margin-top:14px"><button onclick="closeModal()">${t("知道了")}</button></div>`); }
 function applyI18n(){ document.documentElement.lang=LANG||"zh";
-  const nav={"tab-w1":"① 新发射","tab-w2":"② Top100","tab-w3":"③ 收藏","tab-w4":"④ 3天新币","tab-w5":"⑤ AI评分","tab-admin":"⚙️ 管理"};
+  const nav={"tab-w1":"① 新发射","tab-w2":"② Top100","tab-w3":"③ 收藏","tab-w4":"④ 3天新币","tab-w5":"⑤ AI·RH","tab-w6":"⑥ AI·BSC","tab-w7":"⑦ AI·Base","tab-w8":"⑧ 深度报告","tab-admin":"⚙️ 管理"};
   for(const id in nav){ const e=document.getElementById(id); if(e)e.textContent=t(nav[id]); }
-  const ti={"view-w1":"① 新发射实时","view-w2":"② Top100 meme · 按24h交易量","view-w3":"③ 收藏 · 深度分析","view-w4":"④ 3天内新币 · Top100 按交易量","view-w5":"⑤ AI 评分 · 市值 $100k–$5M"};
+  const ti={"view-w1":"① 新发射实时","view-w2":"② Top100 meme · 按24h交易量","view-w3":"③ 收藏 · 深度分析","view-w4":"④ 3天内新币 · Top100 按交易量","view-w5":"⑤ AI 评分 · Robinhood","view-w6":"⑥ AI 评分 · BSC","view-w7":"⑦ AI 评分 · Base","view-w8":"⑧ 自定义深度报告"};
+  const intro=document.getElementById("w8-intro"); if(intro)intro.textContent=t("选择链 + 输入合约地址 → 用 Clawby 抓取全部 RPC / 持有人 / 交易记录 / 持有者关联 / X 数据 → 生成含折线图、时间线、分布图的完整 PDF 报告。");
+  const wb=document.getElementById("w8-btn"); if(wb)wb.textContent="🔬 "+t("生成报告");
   for(const id in ti){ const e=document.querySelector("#"+id+" .phead .t"); if(e)e.textContent=t(ti[id]); } }
 function chooseLang(l){ LANG=l; localStorage.setItem("ui_lang",l); document.getElementById("lang-modal").hidden=true;
   fetch("/api/config",{method:"POST",headers:H,body:JSON.stringify({lang:l})}).catch(()=>{});
@@ -273,6 +307,7 @@ const COLS={
     {k:"mcap",label:"市值",r:t=>usd(t.mcap)},
     {k:"holders",label:"holders",r:t=>num(t.holders)},
     {k:"volume24",label:"24h量",r:t=>usd(t.volume24)},
+    {k:"transfers",label:"24h交易数",r:t=>num(t.transfers)},
     {k:"scored_at",label:"评分时间",r:scoredCell},
     {k:"_fav",label:"★",r:favBtn},
   ],
@@ -292,9 +327,10 @@ const COLS={
     {k:"_del",label:"",r:delBtn},
   ],
 };
-const SORT={w1:{k:"created_ts",d:-1},w2:{k:"volume24",d:-1},w3:{k:null,d:-1},w4:{k:"volume24",d:-1},w5:{k:"score",d:-1}};
-const SEEN={w1:new Set(),w2:new Set(),w3:new Set(),w4:new Set(),w5:new Set()};
-const DATA={w1:[],w2:[],w3:[],w4:[],w5:[]};
+COLS.w6 = COLS.w5; COLS.w7 = COLS.w5;              // BSC / Base scorers reuse the ⑤ columns
+const SORT={w1:{k:"created_ts",d:-1},w2:{k:"volume24",d:-1},w3:{k:null,d:-1},w4:{k:"volume24",d:-1},w5:{k:"score",d:-1},w6:{k:"score",d:-1},w7:{k:"score",d:-1}};
+const SEEN={w1:new Set(),w2:new Set(),w3:new Set(),w4:new Set(),w5:new Set(),w6:new Set(),w7:new Set()};
+const DATA={w1:[],w2:[],w3:[],w4:[],w5:[],w6:[],w7:[]};
 const H={"Content-Type":"application/json"};
 let ANA={}, STATUS={}, tab="w1";
 
@@ -312,7 +348,7 @@ function drawPanel(win){
     if(win==="w3") msg=t("暂无收藏 —— 在 ①/②/④/⑤ 表格点 ★ 添加");
     else if(!w.enabled) msg=t("⏸ 已暂停（在此窗口或⚙️管理开启）");
     else if(w.running) msg="⏳ "+esc(tphase(w.phase)||t("扫描中"));
-    else if(win==="w5") msg=w.phase?("⏳ "+esc(tphase(w.phase))):t("⏳ 拉取候选中…（市值 $100k–$5M，随后滚动评分）");
+    else if(SCOREWINS.includes(win)) msg=w.phase?("⏳ "+esc(tphase(w.phase))):t("⏳ 拉取候选中…（市值 $100k–$5M，随后滚动评分）");
     else msg=t("⏳ 加载中…（首屏可能需要 1-2 分钟）");
     document.getElementById("body-"+win).innerHTML=`<tr><td class="dim" colspan="${cols(win).length}" style="padding:18px;text-align:center">${msg}</td></tr>`; return; }
   const seen=SEEN[win], cs=cols(win);
@@ -324,15 +360,15 @@ function updatePanelHeader(win){ const w=STATUS[win]||{};
   const pill=document.getElementById("pill-"+win);
   if(pill){
     if(!w.enabled){ pill.className="pill paused"; pill.textContent=t("⏸ 已暂停"); }
-    else if(win==="w5"&&w.scoring){ pill.className="pill run"; pill.innerHTML=`<span class="dot"></span>${t("评分中")} ${esc(w.scoring_sym||short(w.scoring||""))}`; }
+    else if(SCOREWINS.includes(win)&&w.scoring){ pill.className="pill run"; pill.innerHTML=`<span class="dot"></span>${t("评分中")} ${esc(w.scoring_sym||short(w.scoring||""))}`; }
     else if(w.running){ pill.className="pill run"; pill.innerHTML=`<span class="dot"></span>${t("扫描中")}${w.phase?` · ${esc(tphase(w.phase))}`:""}`; }
-    else if(win==="w5"){ pill.className="pill idle"; pill.textContent=`✓ ${t("滚动评分")} ${w.scored||0}/${w.pool||0}`; }
+    else if(SCOREWINS.includes(win)){ pill.className="pill idle"; pill.textContent=`✓ ${t("滚动评分")} ${w.scored||0}/${w.pool||0}`; }
     else { pill.className="pill idle"; pill.textContent=(w.phase&&w.phase!=="空闲")?("✓ "+esc(tphase(w.phase))):("✓ "+t("空闲")); }
   }
   const meta=document.getElementById("ph-"+win), last=w.last?w.last.slice(11,19):'—';
-  if(meta){ if(win==="w5") meta.innerHTML=`${t("已评")} ${w.scored||0} / ${t("共")} ${w.pool||0}${w.scoring?` · ${t("正在评分")} ${esc(w.scoring_sym||'')}`:''} · ${t("刷新")} ${last}`;
+  if(meta){ if(SCOREWINS.includes(win)) meta.innerHTML=`${t("已评")} ${w.scored||0} / ${t("共")} ${w.pool||0}${w.scoring?` · ${t("正在评分")} ${esc(w.scoring_sym||'')}`:''} · ${t("刷新")} ${last}`;
     else meta.innerHTML=`${w.count||0} ${t("条")} · ${t("上次")} ${last}${w.interval?` · ${t("间隔")} ${w.interval}s`:''}`; }
-  if(win==="w5"){ const pr=document.getElementById("prog-w5"); if(pr){ const pool=w.pool||0,sc=w.scored||0,pct=pool?Math.round(sc/pool*100):0;
+  if(SCOREWINS.includes(win)){ const pr=document.getElementById("prog-"+win); if(pr){ const pool=w.pool||0,sc=w.scored||0,pct=pool?Math.round(sc/pool*100):0;
     pr.querySelector(".fill").style.width=pct+"%";
     pr.querySelector(".lbl").innerHTML=w.scoring?`⏳ ${t("正在评分")} <b class="pos">${esc(w.scoring_sym||'…')}</b> · ${sc}/${pool} (${pct}%)`:(w.enabled?`${t("滚动评分中")} · ${sc}/${pool} (${pct}%)`:`${t("已暂停")} · ${sc}/${pool}`); } }
   const pb=document.getElementById("pause-"+win); if(pb) pb.textContent=w.enabled?t("⏸ 暂停"):t("▶ 开启");
@@ -351,6 +387,7 @@ function setEngine(v){ fetch("/api/config",{method:"POST",headers:H,body:JSON.st
 function setIval(win,v){ fetch("/api/window/"+win+"/interval",{method:"POST",headers:H,body:JSON.stringify({interval:+v||5})}).then(()=>toast(MARK[win]+" 间隔 "+(+v||5)+"s")); }
 function togglePlat(name,en){ fetch("/api/platform/toggle",{method:"POST",headers:H,body:JSON.stringify({name,enabled:en})}).then(()=>toast(name+(en?" 已启用":" 已停用"))); }
 function setField(win,name,en){ fetch("/api/field/toggle",{method:"POST",headers:H,body:JSON.stringify({win,name,enabled:en})}).then(refreshStatus).then(()=>toast(t(WLAB[win]||win)+"·"+t(FLAB[name]||name)+" "+(en?t("已启用"):t("已关闭")))); }
+function setScoreCfg(win,patch){ fetch("/api/score/config",{method:"POST",headers:H,body:JSON.stringify({win,...patch})}).then(()=>refreshStatus()).then(()=>toast((SCORE_LABEL[win]||win)+" "+t("已更新"))); }
 function tgSet(patch){ fetch("/api/tg/config",{method:"POST",headers:H,body:JSON.stringify(patch)}).then(()=>refreshStatus()).then(()=>toast(t("Telegram 设置已保存"))); }
 function tgTest(){ toast(t("发送中…")); fetch("/api/tg/test",{method:"POST"}).then(r=>r.json()).then(j=>toast(j.ok?t("✅ 测试消息已发送"):("⚠ "+j.msg))); }
 function tgChats(){ fetch("/api/tg/chats").then(r=>r.json()).then(j=>{ const el=document.getElementById("tg-chats"); if(!el)return;
@@ -359,12 +396,27 @@ function tgChats(){ fetch("/api/tg/chats").then(r=>r.json()).then(j=>{ const el=
 function analyze(ca){ ANA[ca]={status:"started",step:t("启动…")}; drawPanel("w3");
   fetch("/api/analyze",{method:"POST",headers:H,body:JSON.stringify({ca})}).then(()=>{toast(t("深度分析已启动")+" "+short(ca));pollAna(ca);}); }
 function pollAna(ca){ fetch("/api/analyze/"+ca).then(r=>r.json()).then(j=>{ANA[ca]=j; drawPanel("w3"); if(ANA_RUN.includes(j.status)) setTimeout(()=>pollAna(ca),3000); else if(j.status==="done") toast(t("✅ 报告已生成")+" "+short(ca));}).catch(()=>{}); }
+// ---------- ⑧ custom deep report ----------
+let repJob=null;
+function genReport(){ const chain=document.getElementById("rep-chain").value;
+  const ca=(document.getElementById("rep-ca").value||"").trim().toLowerCase();
+  if(!/^0x[0-9a-f]{40}$/.test(ca)){ toast(t("请输入有效的合约地址(0x…40位)")); return; }
+  repJob={chain,ca}; document.getElementById("w8-btn").disabled=true;
+  document.getElementById("rep-status").innerHTML=`<span class="pos">⏳ ${t("已启动，正在抓取数据…")}</span>`;
+  fetch("/api/analyze",{method:"POST",headers:H,body:JSON.stringify({chain,ca,full:true})}).then(r=>r.json()).then(()=>{toast(t("深度报告已启动")+" "+short(ca));pollReport();}); }
+function pollReport(){ if(!repJob) return; const {chain,ca}=repJob;
+  fetch(`/api/analyze/${chain}/${ca}`).then(r=>r.json()).then(j=>{ const el=document.getElementById("rep-status"); if(!el)return;
+    if(j.has_report||j.status==="done"){ el.innerHTML=`<a class="bigbtn" style="display:inline-block;text-decoration:none" href="/api/report/${chain}/${ca}" target="_blank">📄 ${t("打开 PDF 报告")}</a> <button class="ghost sm" onclick="genReport()">🔄 ${t("重新生成")}</button>`; document.getElementById("w8-btn").disabled=false; toast(t("✅ 报告已生成")); return; }
+    if(j.status==="error"){ el.innerHTML=`<span class="dim" title="${esc(j.error||'')}">⚠ ${t("失败")}: ${esc((j.error||'').slice(0,90))}</span> <button class="ghost sm" onclick="genReport()">🔄</button>`; document.getElementById("w8-btn").disabled=false; return; }
+    el.innerHTML=`<span class="pos">⏳ ${esc(j.step||j.status||"…")}</span> <span class="dim">· ${t("含图表的报告约需 3-8 分钟")}</span>`; setTimeout(pollReport,3000);
+  }).catch(()=>setTimeout(pollReport,4000)); }
+function renderReport(){ if(repJob) pollReport(); }
 let toastT; function toast(m){ const e=document.getElementById("toast"); e.textContent=m; e.classList.add("on"); clearTimeout(toastT); toastT=setTimeout(()=>e.classList.remove("on"),2500); }
 
-function switchTab(t){ tab=t;
-  TABS.concat("admin").forEach(x=>{ const b=document.getElementById("tab-"+x); if(b)b.className="tabbtn"+(x===t?" on":"");
-    const v=document.getElementById("view-"+x); if(v)v.hidden=(x!==t); });
-  if(t==="admin") renderAdmin(); else tick(); }
+function switchTab(nt){ tab=nt;
+  TABS.concat("w8","admin").forEach(x=>{ const b=document.getElementById("tab-"+x); if(b)b.className="tabbtn"+(x===nt?" on":"");
+    const v=document.getElementById("view-"+x); if(v)v.hidden=(x!==nt); });
+  if(nt==="admin") renderAdmin(); else if(nt==="w8") renderReport(); else tick(); }
 
 function renderAdmin(){ const st=STATUS; if(!st.w1) return; const tgc=st.telegram||{};
   const el=document.getElementById("view-admin");
@@ -378,7 +430,12 @@ function renderAdmin(){ const st=STATUS; if(!st.w1) return; const tgc=st.telegra
     </div>
     <div class="card"><h3>${t("窗口 · 扫描间隔 / 开关")}</h3>
       <div class="dim" style="font-size:11px;margin-bottom:6px">⚠️ ${t("最多同时监控 2 个窗口")}</div>
-      ${winRow('w1','① 新发射实时')}${winRow('w2','② Top100 热门')}${winRow('w4','④ 3天内新币')}${winRow('w5','⑤ AI评分(候选刷新)')}${winRow('w3','③ 收藏监控')}
+      ${winRow('w1','① 新发射实时')}${winRow('w2','② Top100 热门')}${winRow('w4','④ 3天内新币')}${winRow('w3','③ 收藏监控')}
+      ${winRow('w5','⑤ AI·Robinhood')}${winRow('w6','⑥ AI·BSC')}${winRow('w7','⑦ AI·Base')}
+    </div>
+    <div class="card"><h3>${t("AI 评分器 · 市值 / 新旧筛选")}</h3>
+      <div class="dim" style="font-size:11px;margin-bottom:8px">${t("每个链可自定义评分的市值区间;创建时间(天,0=不限)")}</div>
+      ${["w5","w6","w7"].map(w=>{const s=st[w]||{};return `<div class="row" style="flex-wrap:wrap;gap:4px"><span class="lbl">${SCORE_LABEL[w]}</span><span>$<input class="in freq" style="width:64px" value="${Math.round((s.mcap_min||0)/1000)}" onchange="setScoreCfg('${w}',{mcap_min:this.value*1000})">K – $<input class="in freq" style="width:70px" value="${Math.round((s.mcap_max||0)/1000)}" onchange="setScoreCfg('${w}',{mcap_max:this.value*1000})">K · ≤<input class="in freq" style="width:44px" value="${s.max_age_days||0}" onchange="setScoreCfg('${w}',{max_age_days:this.value})">${t("天")}</span></div>`;}).join("")}
     </div>
     <div class="card"><h3>${t("📲 Telegram 评分提醒")}</h3>
       <div class="row"><span class="lbl">${t("启用提醒")}</span><input type="checkbox" ${tgc.enabled?'checked':''} onchange="tgSet({enabled:this.checked})"></div>
@@ -410,7 +467,7 @@ async function refreshStatus(){ if(document.hidden) return; try{ STATUS=await fe
   document.getElementById("s-block").innerHTML="block <b>"+(STATUS.latest_block||"—")+"</b>";
   document.getElementById("s-tok").innerHTML="tokens <b>"+((STATUS.w1?.count||0)+(STATUS.w2?.count||0))+"</b>";
   document.getElementById("s-api").innerHTML="API <b>"+STATUS.api_calls+"</b>";
-  const running=TABS.filter(w=>STATUS[w]&&(STATUS[w].running||(w==="w5"&&STATUS[w].scoring))).map(w=>MARK[w]);
+  const running=TABS.filter(w=>STATUS[w]&&(STATUS[w].running||(SCOREWINS.includes(w)&&STATUS[w].scoring))).map(w=>MARK[w]);
   document.getElementById("s-act").innerHTML=running.length?`<span class="pos">⏳ ${running.join(" ")}</span>`:`<span class="dim">· 空闲</span>`;
   const rb=STATUS.rate_banned||0;
   document.getElementById("s-err").innerHTML=rb>0?`<span style="color:var(--amber)">⚠ ${t("上游限流,剩")} ${rb}s</span>`:(STATUS.error?("⚠ "+esc(STATUS.error)):"");

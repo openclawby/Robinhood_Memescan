@@ -8,6 +8,7 @@ import asyncio
 import json
 import os
 import shutil
+import tempfile
 import time
 
 import clawby
@@ -51,23 +52,34 @@ def get_engine():
     return ENGINE
 
 
-def _prompt():
+def _prompt(full=False):
     langname = "简体中文 (Simplified Chinese)" if LANG == "zh" else "English"
-    return (
-        "You are a crypto due-diligence analyst reviewing a Robinhood-chain memecoin. "
-        "If the files ~/.claude/skills/clawby-data/report/report-guide.md and report.css exist, "
-        "READ them and follow that professional report structure and styling. "
-        "The pre-gathered on-chain + X data for this token is in ./wiki/ "
-        "(read ALL files there). Using that data, write a single self-contained, print-friendly "
-        "styled HTML report to ./report.html — A4 width, apply the clawby report.css look (light "
-        "theme, clean typography, header with token name/symbol/CA). Sections: 1) Snapshot (mcap, "
-        "price, 24h volume, holders); 2) On-chain analysis (creator reputation, transfer activity, "
-        "liquidity & ETH in pools); 3) Holder distribution & smart-money/KOL presence; 4) Social/X "
-        "sentiment (quote notable posts); 5) Risk assessment (concentration, liquidity, dev history, "
-        "red flags); 6) Verdict — bullish/neutral/bearish with concise reasoning. Ground every claim "
-        "in the wiki data. WRITE THE ENTIRE REPORT IN " + langname.upper() +
-        ". End with a 'not investment advice' disclaimer."
-    )
+    base = (
+        "You are a crypto due-diligence analyst reviewing a memecoin. The pre-gathered data is in "
+        "./wiki/ (read ALL files there). Write a single self-contained, print-friendly A4 HTML report "
+        "to ./report.html — light theme, clean typography, a header with token name / symbol / CA / chain. ")
+    if not full:
+        body = (
+            "Sections: 1) Snapshot (mcap, price, 24h volume, holders); 2) On-chain analysis (creator "
+            "reputation, transfer activity, liquidity); 3) Holder distribution & smart-money/KOL presence; "
+            "4) Social/X sentiment (quote notable posts); 5) Risk assessment (concentration, liquidity, dev "
+            "history, red flags); 6) Verdict — bullish/neutral/bearish with concise reasoning. ")
+    else:
+        body = (
+            "This is a FULL illustrated research report. THE CHARTS ARE ALREADY BUILT for you in ./charts.html "
+            "(a price line chart, a 24h-volume bar, and a holder-distribution doughnut; it already references the "
+            "local chart.min.js). READ ./charts.html and paste its ENTIRE content VERBATIM into your report where "
+            "the charts belong (inside section 2). Do NOT write any Chart.js or <canvas> yourself. Read ./wiki/ for "
+            "all the numbers. Sections (be concise, prose only): 1) Snapshot; 2) Price & volume — include the pasted "
+            "charts + on-chain activity (total tx, 24h tx, deploy block, unique senders/receivers); 3) Holder "
+            "distribution + RELATIONSHIP analysis — interpret top-10 concentration, sniper / bundler / fresh-wallet / "
+            "dev-hold rates and what they imply about insider/manipulation risk; 4) Top traders (short table); "
+            "5) Social/X sentiment (quote a few posts); 6) a short event TIMELINE (creation -> migration -> now); "
+            "7) Risk assessment + Verdict. Clean, well-structured layout for a multi-page PDF. ")
+    reads = ("Read ONLY the small text files ./wiki/*.md and (for a full report) ./charts.html — do NOT open "
+             "chart.min.js or data.json (they are large and you don't need them). " if full else "")
+    return (base + body + reads + "Ground EVERY claim in the wiki data (do not invent numbers). WRITE THE ENTIRE "
+            "REPORT IN " + langname.upper() + ". End with a 'not investment advice' disclaimer.")
 
 
 def set_report_dir(path):
@@ -121,11 +133,11 @@ async def _x_tweets(ca):
     return out
 
 
-async def _gather(ca, fields=None):
+async def _gather(ca, fields=None, chain="robinhood"):
     """Collect a token's data. `fields` toggles the expensive categories
     (tx / holders / x / trading / pools); disabled ones are skipped entirely."""
     f = {**DEFAULT_FIELDS, **(fields or {})}
-    tok = await _retry(lambda: sources.rh_token(ca), ok=lambda r: bool(r and r.get("symbol")))
+    tok = await _retry(lambda: sources.rh_token(ca, chain), ok=lambda r: bool(r and r.get("symbol")))
     tok = tok or {}
     creator = tok.get("creator")                     # GMGN dev.creator_address (the real launcher)
     platform = tok.get("platform")
@@ -133,7 +145,7 @@ async def _gather(ca, fields=None):
 
     holder_profs = []
     if f["holders"]:
-        holders = await sources.rh_holders(ca, 40)
+        holders = await sources.rh_holders(ca, 40, chain=chain)
         if holders:
             profs = await asyncio.gather(*[wallets.classify(h) for h in holders])
             for h, p in zip(holders, profs):
@@ -143,9 +155,9 @@ async def _gather(ca, fields=None):
 
     transfers = {"window_blocks": 0, "count": 0, "unique_senders": 0, "unique_receivers": 0}
     if f["tx"]:
-        latest = await _retry(lambda: clawby.block_number(), ok=lambda r: bool(r))
+        latest = await _retry(lambda: clawby.block_number(chain), ok=lambda r: bool(r))
         frm = max(0, (latest or 0) - 20000)
-        logs = await clawby.get_logs(ca, TRANSFER_TOPIC, frm, latest) if latest else []
+        logs = await clawby.get_logs(ca, TRANSFER_TOPIC, frm, latest, chain=chain) if latest else []
         senders, receivers = set(), set()
         for lg in logs:
             t = lg.get("topics") or []
@@ -157,7 +169,7 @@ async def _gather(ca, fields=None):
 
     pool_rows = []
     if f["pools"]:
-        pools = await clawby.relay("dexscreener_token_pools", {"chainId": "robinhood", "tokenAddresses": ca})
+        pools = await clawby.relay("dexscreener_token_pools", {"chainId": chain, "tokenAddresses": ca})
         pairs = pools.get("pairs") if isinstance(pools, dict) else pools
         pairs = pairs if isinstance(pairs, list) else []
         pool_rows = [{"dex": p.get("dexId"), "liq_usd": (p.get("liquidity") or {}).get("usd"),
@@ -167,7 +179,7 @@ async def _gather(ca, fields=None):
                       "pair": p.get("pairAddress")} for p in pairs]
 
     return {
-        "ca": ca, "token": tok, "creator": creator, "deployer": platform,
+        "ca": ca, "chain": chain, "token": tok, "creator": creator, "deployer": platform,
         "creator_profile": creator_prof, "creation_tx": None,
         "created_ts": tok.get("created_ts"), "fields": f,
         "holders": holder_profs,
@@ -178,6 +190,73 @@ async def _gather(ca, fields=None):
         "pools": pool_rows,
         "x_tweets": (await _x_tweets(ca)) if f["x"] else [], "gathered_at": _now(),
     }
+
+
+# ---------------- comprehensive gather (custom report ⑧) ----------------
+async def _creation_block(ca, chain, latest):
+    """Binary-search the first block where the contract has code (its deploy block)."""
+    async def has_code(bn):
+        r = await clawby.rpc("eth_getCode", [ca, hex(bn)], chain)
+        return isinstance(r, str) and len(r) > 2
+    if not latest or not await has_code(latest):
+        return None
+    lo, hi = 0, latest
+    while lo < hi:
+        mid = (lo + hi) // 2
+        if await has_code(mid):
+            hi = mid
+        else:
+            lo = mid + 1
+    return lo
+
+
+async def _total_transfers(ca, chain, latest, cap_chunks=90):
+    """Count Transfer logs. If the token's whole life fits within the chunk cap it's
+    the TRUE total; otherwise scan the most RECENT window (not the sparse early blocks)
+    and flag partial. Returns (count, partial, deploy_block)."""
+    frm = await _creation_block(ca, chain, latest)
+    if frm is None:
+        return None, False, None
+    max_span = cap_chunks * clawby.MAX_LOG_RANGE
+    if (latest - frm) <= max_span:
+        lo, partial = frm, False                       # whole life fits → true total
+    else:
+        lo, partial = latest - max_span, True          # only the recent window fits
+    total = 0
+    while lo <= latest:
+        hi = min(lo + clawby.MAX_LOG_RANGE - 1, latest)
+        res = await clawby.rpc("eth_getLogs", [{
+            "address": ca, "topics": [TRANSFER_TOPIC],
+            "fromBlock": hex(lo), "toBlock": hex(hi)}], chain)
+        if isinstance(res, list):
+            total += len(res)
+        lo = hi + 1
+    return total, partial, frm
+
+
+async def _gather_full(ca, chain):
+    """Everything the custom PDF report needs: base gather + kline (charts) +
+    full holder records + top traders + a real (bounded) total-tx count."""
+    data = await _gather(ca, dict(DEFAULT_FIELDS), chain=chain)
+    latest = await _retry(lambda: clawby.block_number(chain), ok=lambda r: bool(r))
+    kline, holders, traders, tot = await asyncio.gather(
+        sources.rh_kline(ca, chain=chain, resolution="1h"),
+        sources.rh_holder_records(ca, 50, chain=chain),
+        sources.rh_traders(ca, 25, chain=chain),
+        _total_transfers(ca, chain, latest) if latest else _noop_tot(),
+    )
+    total_tx, partial, deploy_block = tot
+    data.update({
+        "kline": kline, "holder_records": holders, "traders": traders,
+        "latest_block": latest, "deploy_block": deploy_block,
+        "total_tx": total_tx, "total_tx_partial": partial,
+        "stat": (data.get("token") or {}).get("stat") or {},
+    })
+    return data
+
+
+async def _noop_tot():
+    return (None, False, None)
 
 
 # ---------------- wiki ----------------
@@ -254,86 +333,200 @@ def _w(d, name, text):
         f.write(text + "\n")
 
 
+VENDOR_CHART = os.path.join(HERE, "vendor", "chart.min.js")
+
+
+def _jobkey(ca, chain):
+    return ca if chain == "robinhood" else "%s:%s" % (chain, ca)
+
+
+def _write_charts(wiki_dir, d):
+    kline = [k for k in (d.get("kline") or []) if k.get("c") is not None][-168:]
+    step = max(1, len(kline) // 48)                    # downsample to ~48 points for a light chart
+    series = [{"t": k["t"], "c": k["c"], "v": k["v"]} for k in kline[::step]]
+    hrec = [h for h in (d.get("holder_records") or []) if not h.get("is_pool")]
+    dist = [{"addr": h["address"][:8] + "…", "pct": round((h.get("pct") or 0) * 100, 3), "usd": h.get("usd")}
+            for h in hrec[:15]]
+    tr = (d.get("token") or {}).get("trading") or {}
+    _w(wiki_dir, "05-charts.md", "\n".join([
+        "# Chart data — embed these arrays directly into Chart.js (do NOT fetch anything)", "",
+        "## price+volume hourly series  [{t: unix-ms, c: close, v: volume}]  → line(c) + bar(v)",
+        "```json", json.dumps(series, ensure_ascii=False), "```", "",
+        "## top-holder distribution  [{addr, pct(% of supply), usd}]  → doughnut",
+        "```json", json.dumps(dist, ensure_ascii=False), "```", "",
+        "## buys vs sells (24h) → bar:  buys=%s  sells=%s" % (tr.get("buys_24h"), tr.get("sells_24h"))]))
+
+
+def _write_charts_html(work_dir, d):
+    """Pre-build the chart block (deterministic) so the AI just pastes it — far faster
+    and more reliable than asking the model to write Chart.js from scratch."""
+    kl = [k for k in (d.get("kline") or []) if k.get("c") is not None][-168:]
+    step = max(1, len(kl) // 48)
+    kl = kl[::step]
+    labels = [time.strftime("%m-%d %H:%M", time.gmtime((k["t"] or 0) / 1000)) for k in kl]
+    closes = [k["c"] for k in kl]
+    vols = [k["v"] for k in kl]
+    hrec = [h for h in (d.get("holder_records") or []) if not h.get("is_pool")][:12]
+    hlab = [h["address"][:6] + "…" for h in hrec]
+    hpct = [round((h.get("pct") or 0) * 100, 3) for h in hrec]
+    tmpl = (
+        '<div class="cm-charts" style="display:flex;flex-wrap:wrap;gap:24px;margin:14px 0">\n'
+        '  <div><div style="font-weight:700;margin-bottom:4px">Price (hourly close)</div>'
+        '<canvas id="cmPrice" width="640" height="240"></canvas></div>\n'
+        '  <div><div style="font-weight:700;margin-bottom:4px">24h volume</div>'
+        '<canvas id="cmVol" width="640" height="180"></canvas></div>\n'
+        '  <div><div style="font-weight:700;margin-bottom:4px">Top holder distribution</div>'
+        '<canvas id="cmHold" width="340" height="340"></canvas></div>\n'
+        '</div>\n<script src="chart.min.js"></script>\n<script>\n'
+        'const L=__L__, C=__C__, V=__V__, HL=__HL__, HP=__HP__;\n'
+        'const O={animation:false,responsive:false,plugins:{legend:{display:false}}};\n'
+        "new Chart(cmPrice,{type:'line',data:{labels:L,datasets:[{data:C,borderColor:'#2563eb',borderWidth:1.6,pointRadius:0,fill:false}]},options:{...O,scales:{x:{ticks:{maxTicksLimit:8}}}}});\n"
+        "new Chart(cmVol,{type:'bar',data:{labels:L,datasets:[{data:V,backgroundColor:'#93c5fd'}]},options:{...O,scales:{x:{ticks:{maxTicksLimit:8}}}}});\n"
+        "new Chart(cmHold,{type:'doughnut',data:{labels:HL,datasets:[{data:HP,backgroundColor:['#2563eb','#3b82f6','#60a5fa','#93c5fd','#f59e0b','#ef4444','#10b981','#8b5cf6','#ec4899','#14b8a6','#f97316','#64748b']}]},options:{animation:false,responsive:false,plugins:{legend:{position:'right',labels:{boxWidth:10,font:{size:9}}}}}});\n"
+        '</script>')
+    html = (tmpl.replace("__L__", json.dumps(labels)).replace("__C__", json.dumps(closes))
+            .replace("__V__", json.dumps(vols)).replace("__HL__", json.dumps(hlab))
+            .replace("__HP__", json.dumps(hpct)))
+    with open(os.path.join(work_dir, "charts.html"), "w", encoding="utf-8") as fh:
+        fh.write(html)
+
+
+def _write_fulldata(wiki_dir, d):
+    st = d.get("stat") or {}
+    tot_line = ("- Transfers in the recent ~270k blocks (full history too long to scan fully): %s"
+                if d.get("total_tx_partial") else "- TOTAL transfers (deploy → now, RPC-counted): %s") % d.get("total_tx")
+    lines = ["# Full on-chain (RPC) + holder-relationship data",
+             "- Deploy block: %s · latest block: %s" % (d.get("deploy_block"), d.get("latest_block")),
+             tot_line,
+             "- 24h tx (swaps): %s" % ((d.get("token") or {}).get("transfers")),
+             "- recent-window transfers (last ~%s blocks): %s (unique senders %s / receivers %s)" % (
+                 d["transfers"]["window_blocks"], d["transfers"]["count"],
+                 d["transfers"]["unique_senders"], d["transfers"]["unique_receivers"]),
+             "", "## Holder-relationship signals (0–1 = share of supply / traders)",
+             "- Top-10 holder concentration: %s" % st.get("top_10_holder_rate"),
+             "- Sniper hold rate: %s · Bundler rate: %s" % (st.get("sniper_hold_rate"), st.get("bundler_rate")),
+             "- Rat-trader rate: %s · Fresh-wallet rate: %s" % (st.get("rat_trader_rate"), st.get("fresh_wallet_rate")),
+             "- Dev-hold rate: %s · Bot-degen rate: %s" % (st.get("dev_hold_rate"), st.get("bot_degen_rate")),
+             "", "## Top holders", "| address | % supply | USD | pool? |", "|---|---|---|---|"]
+    for h in (d.get("holder_records") or [])[:15]:
+        lines.append("| `%s` | %s | %s | %s |" % (h["address"], h.get("pct"), h.get("usd"), h.get("is_pool")))
+    lines += ["", "## Top traders (by realized PnL)", "| address | realized PnL | buys | sells | tags |", "|---|---|---|---|---|"]
+    for t in (d.get("traders") or [])[:12]:
+        lines.append("| `%s` | %s | %s | %s | %s |" % (t["address"], t.get("realized_profit"),
+                                                        t.get("buys"), t.get("sells"), ",".join(t.get("tags") or [])))
+    _w(wiki_dir, "06-fulldata.md", "\n".join(lines))
+
+
 # ---------------- subprocess steps (pluggable analysis engine) ----------------
-async def _spawn(argv, work_dir):
+async def _spawn(argv, work_dir, timeout=None):
     proc = await asyncio.create_subprocess_exec(
         *argv, cwd=work_dir, stdin=asyncio.subprocess.DEVNULL, env=_subenv(),
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
     )
     try:
-        out, _ = await asyncio.wait_for(proc.communicate(), timeout=ENGINE_TIMEOUT)
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout or ENGINE_TIMEOUT)
     except asyncio.TimeoutError:
         proc.kill()
         raise RuntimeError("%s analysis timed out" % ENGINE)
     return (out or b"").decode("utf-8", "replace")
 
 
-async def _run_claude(work_dir, prompt, fast):
+async def _run_claude(work_dir, prompt, fast, timeout=None):
     claude = shutil.which("claude") or "claude"
     model = "haiku" if fast else "sonnet"
     return await _spawn(
-        [claude, "-p", prompt, "--permission-mode", "acceptEdits", "--model", model], work_dir)
+        [claude, "-p", prompt, "--permission-mode", "acceptEdits", "--model", model], work_dir, timeout)
 
 
-async def _run_codex(work_dir, prompt, fast):
+async def _run_codex(work_dir, prompt, fast, timeout=None):
     codex = shutil.which("codex") or "codex"
     # non-interactive; workspace-write lets it create files in work_dir
     return await _spawn(
         [codex, "exec", "--cd", work_dir, "--sandbox", "workspace-write",
-         "--skip-git-repo-check", prompt], work_dir)
+         "--skip-git-repo-check", prompt], work_dir, timeout)
 
 
-async def _run_engine(work_dir, prompt, fast=False):
-    return await (_run_codex(work_dir, prompt, fast) if ENGINE == "codex"
-                  else _run_claude(work_dir, prompt, fast))
+async def _run_engine(work_dir, prompt, fast=False, timeout=None):
+    return await (_run_codex(work_dir, prompt, fast, timeout) if ENGINE == "codex"
+                  else _run_claude(work_dir, prompt, fast, timeout))
 
 
-async def _to_pdf(html_path, pdf_path):
+async def _to_pdf(html_path, pdf_path, charts=False):
+    profile = tempfile.mkdtemp(prefix="cmchrome-")     # UNIQUE writable profile (avoids HOME + stale-lock issues)
+    args = [CHROME, "--headless", "--disable-gpu", "--no-sandbox", "--no-first-run",
+            "--user-data-dir=%s" % profile, "--no-pdf-header-footer", "--print-to-pdf=%s" % pdf_path]
+    if charts:                                         # give Chart.js time to draw before printing
+        args += ["--virtual-time-budget=12000", "--run-all-compositor-stages-before-draw"]
+    args.append(html_path)
     proc = await asyncio.create_subprocess_exec(
-        CHROME, "--headless", "--disable-gpu", "--no-pdf-header-footer",
-        "--print-to-pdf=%s" % pdf_path, html_path,
-        stdin=asyncio.subprocess.DEVNULL, env=_subenv(),
+        *args, stdin=asyncio.subprocess.DEVNULL, env=_subenv(),
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
     )
-    await asyncio.wait_for(proc.communicate(), timeout=90)
-    return os.path.exists(pdf_path)
+    try:
+        await asyncio.wait_for(proc.communicate(), timeout=60)
+    except asyncio.TimeoutError:
+        proc.kill()                                    # headless Chrome prints the PDF then sometimes hangs
+        try:
+            await proc.wait()
+        except Exception:  # noqa: BLE001
+            pass
+    shutil.rmtree(profile, ignore_errors=True)
+    return os.path.exists(pdf_path)                    # the PDF is written before Chrome hangs
 
 
 # ---------------- orchestration ----------------
-async def run_analysis(ca):
+async def run_analysis(ca, chain="robinhood", full=False):
     ca = ca.lower()
-    JOBS[ca] = {"status": "gathering", "step": "抓取链上 + X 数据", "started": _now(),
-                "finished": None, "report": None, "error": None}
+    key = _jobkey(ca, chain)
+    JOBS[key] = {"status": "gathering", "step": "抓取链上+持有人+交易+X数据" if full else "抓取链上 + X 数据",
+                 "started": _now(), "finished": None, "report": None, "error": None, "chain": chain, "ca": ca}
     try:
-        data = await _gather(ca)
-        work = os.path.join(ANALYSIS_DIR, ca)
-        _write_wiki(os.path.join(work, "wiki"), data)
+        data = await (_gather_full(ca, chain) if full else _gather(ca, None, chain=chain))
+        work = os.path.join(ANALYSIS_DIR, "%s_%s" % (chain, ca))
+        wiki = os.path.join(work, "wiki")
+        _write_wiki(wiki, data)
+        if full:
+            _write_charts(wiki, data)
+            _write_fulldata(wiki, data)
+            _write_charts_html(work, data)            # ready-made chart block for the AI to paste
+            if os.path.exists(VENDOR_CHART):          # vendor the chart lib locally (no CDN at render time)
+                shutil.copy(VENDOR_CHART, os.path.join(work, "chart.min.js"))
         with open(os.path.join(work, "data.json"), "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2, default=str, ensure_ascii=False)
 
-        JOBS[ca].update(status="analyzing", step="本地 %s 分析中" % ENGINE, engine=ENGINE)
+        JOBS[key].update(status="analyzing", step="本地 %s 生成报告中" % ENGINE, engine=ENGINE)
         html = os.path.join(work, "report.html")
+        try:
+            os.remove(html)
+        except OSError:
+            pass
         log = ""
-        for attempt in range(2):          # the CLI can blip a transient timeout; retry once
-            log = await _run_engine(work, _prompt(), fast=False)
+        attempts = 1 if full else 2       # the full illustrated report is slow — don't double it
+        tmo = 900 if full else ENGINE_TIMEOUT
+        for attempt in range(attempts):
+            try:
+                log = await _run_engine(work, _prompt(full), fast=False, timeout=tmo)
+            except RuntimeError as e:      # timeout — check whether it wrote the file anyway
+                log = str(e)
             if os.path.exists(html):
                 break
-            JOBS[ca].update(step="%s 重试中" % ENGINE)
+            if attempt + 1 < attempts:
+                JOBS[key].update(step="%s 重试中" % ENGINE)
         if not os.path.exists(html):
             raise RuntimeError("%s did not write report.html — tail:\n%s" % (ENGINE, log[-600:]))
 
-        JOBS[ca].update(status="rendering", step="Chrome 渲染 PDF")
+        JOBS[key].update(status="rendering", step="Chrome 渲染 PDF")
         os.makedirs(REPORT_DIR, exist_ok=True)
         sym = ((data.get("token") or {}).get("symbol") or "token").replace("/", "_")
         ts = time.strftime("%Y%m%d-%H%M%S", time.gmtime())
-        pdf = os.path.join(REPORT_DIR, "%s-%s-%s.pdf" % (sym, ca[:8], ts))
-        if not await _to_pdf(html, pdf):
+        pdf = os.path.join(REPORT_DIR, "%s-%s-%s-%s.pdf" % (sym, chain, ca[:8], ts))
+        if not await _to_pdf(html, pdf, charts=full):
             raise RuntimeError("Chrome failed to render the PDF")
 
-        JOBS[ca].update(status="done", step="完成", report=pdf, finished=_now())
+        JOBS[key].update(status="done", step="完成", report=pdf, finished=_now())
         _cleanup()
     except Exception as e:  # noqa: BLE001
-        JOBS[ca].update(status="error", step="失败", error=str(e), finished=_now())
+        JOBS[key].update(status="error", step="失败", error=str(e), finished=_now())
 
 
 def _cleanup(keep=25):
@@ -377,11 +570,11 @@ def _read_score(work):
         return None
 
 
-async def score_token(ca, fields=None):
+async def score_token(ca, fields=None, chain="robinhood"):
     """Gather (field-configurable) → wiki → fast claude/codex → {score, rationale}."""
     ca = ca.lower()
-    data = await _gather(ca, fields)
-    work = os.path.join(SCORE_DIR, ca)
+    data = await _gather(ca, fields, chain=chain)
+    work = os.path.join(SCORE_DIR, "%s_%s" % (chain, ca))
     _write_wiki(os.path.join(work, "wiki"), data)
     try:
         os.remove(os.path.join(work, "score.json"))     # clear any stale result

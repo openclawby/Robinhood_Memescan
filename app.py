@@ -24,18 +24,20 @@ def collect_state():
             "lang": analyze.get_lang(),
             "engine": analyze.get_engine(),
             "report_dir": analyze.get_report_dir(),
-            "w1_interval": M.W1["interval"], "w2_interval": M.W2["interval"],
-            "w4_interval": M.W4["interval"], "w5_interval": M.W5["interval"],
-            "w1_enabled": M.W1["enabled"], "w2_enabled": M.W2["enabled"], "w3_enabled": M.W3["enabled"],
-            "w4_enabled": M.W4["enabled"], "w5_enabled": M.W5["enabled"],
+            "w1_interval": M.W1["interval"], "w2_interval": M.W2["interval"], "w4_interval": M.W4["interval"],
         },
+        "scorers": {win: {"interval": S["interval"], "mcap_min": S["mcap_min"],
+                          "mcap_max": S["mcap_max"], "max_age_days": S["max_age_days"]}
+                    for win, S in M.SCORERS.items()},
         "platforms": {p["name"]: p.get("enabled", False) for p in M.PLATFORMS},
         "fields": M.fields_state(),
-        "scores": {ca: {"score": t.get("score"), "rationale": t.get("rationale"),
-                        "scored_at": t.get("scored_at"), "symbol": t.get("symbol"),
-                        "name": t.get("name"), "icon": t.get("icon"), "platform": t.get("platform"),
-                        "mcap": t.get("mcap"), "volume24": t.get("volume24"), "holders": t.get("holders")}
-                   for ca, t in M.W5["tokens"].items() if t.get("score") is not None},
+        "scores": {win: {ca: {"score": t.get("score"), "rationale": t.get("rationale"),
+                              "scored_at": t.get("scored_at"), "symbol": t.get("symbol"),
+                              "name": t.get("name"), "icon": t.get("icon"), "platform": t.get("platform"),
+                              "mcap": t.get("mcap"), "volume24": t.get("volume24"),
+                              "holders": t.get("holders"), "transfers": t.get("transfers")}
+                         for ca, t in S["tokens"].items() if t.get("score") is not None}
+                   for win, S in M.SCORERS.items()},
         "telegram": tg.get_config(),
         "tg_notified": list(tg.NOTIFIED),
         "watch": {ca: {"interval": w["interval"], "added": w.get("added"),
@@ -56,9 +58,14 @@ def apply_state(st):
         analyze.set_engine(cfg["engine"])
     if cfg.get("report_dir"):
         analyze.set_report_dir(cfg["report_dir"])
-    for win in ("w1", "w2", "w4", "w5"):
+    for win in ("w1", "w2", "w4"):
         if win + "_interval" in cfg:
             M.set_interval(win, cfg[win + "_interval"])
+    for win, sc in (st.get("scorers") or {}).items():     # AI-scorer configs (mcap band / age / interval)
+        if win in M.SCORERS:
+            if sc.get("interval"):
+                M.set_interval(win, sc["interval"])
+            M.set_score_config(win, sc.get("mcap_min"), sc.get("mcap_max"), sc.get("max_age_days"))
     # windows boot PAUSED (avoids an initial concurrency spike) — the user turns on
     # up to M.MAX_ACTIVE of them. Enabled state is intentionally NOT persisted.
     for win in M.ALL_WINDOWS:
@@ -72,12 +79,17 @@ def apply_state(st):
     for win, fs in (st.get("fields") or {}).items():
         for name, val in (fs or {}).items():
             M.set_field(win, name, val)
-    for ca, s in (st.get("scores") or {}).items():
-        M.W5["tokens"][ca.lower()] = {
-            "ca": ca.lower(), "symbol": s.get("symbol"), "name": s.get("name"), "icon": s.get("icon"),
-            "platform": s.get("platform"), "mcap": s.get("mcap"), "volume24": s.get("volume24"),
-            "holders": s.get("holders"), "score": s.get("score"), "rationale": s.get("rationale"),
-            "scored_at": s.get("scored_at"), "scoring": False, "error": None}
+    for win, sc in (st.get("scores") or {}).items():
+        S = M.SCORERS.get(win)
+        if not S:
+            continue
+        for ca, s in (sc or {}).items():
+            S["tokens"][ca.lower()] = {
+                "ca": ca.lower(), "chain": S["chain"], "symbol": s.get("symbol"), "name": s.get("name"),
+                "icon": s.get("icon"), "platform": s.get("platform"), "mcap": s.get("mcap"),
+                "volume24": s.get("volume24"), "holders": s.get("holders"), "transfers": s.get("transfers"),
+                "score": s.get("score"), "rationale": s.get("rationale"),
+                "scored_at": s.get("scored_at"), "scoring": False, "error": None}
     for ca, w in (st.get("watch") or {}).items():
         M.W3["watch"][ca.lower()] = {"interval": max(10, int(w.get("interval", 60))), "next_due": 0.0,
                                      "data": {}, "added": w.get("added") or M.now(),
@@ -103,8 +115,12 @@ async def lifespan(_app):
     apply_state(util.load_state())
     tasks = [asyncio.create_task(M.w1_loop()), asyncio.create_task(M.w2_loop()),
              asyncio.create_task(M.w3_loop()), asyncio.create_task(M.w4_loop()),
-             asyncio.create_task(M.w5_loop()), asyncio.create_task(M.w5_score_loop()),
              asyncio.create_task(_save_loop())]
+    warm = {"w5": (20, 35), "w6": (25, 42), "w7": (30, 48)}   # stagger the AI scorers
+    for win, S in M.SCORERS.items():
+        a, b = warm.get(win, (20, 35))
+        tasks.append(asyncio.create_task(M.score_loop(S, a)))
+        tasks.append(asyncio.create_task(M.score_work_loop(S, b)))
     try:
         yield
     finally:
@@ -139,12 +155,10 @@ async def api_w4():
     return JSONResponse([M.W4["tokens"][ca] for ca in M.W4["rank"] if ca in M.W4["tokens"]])
 
 
-@app.get("/api/w5")
-async def api_w5():
-    toks = M.W5["tokens"]
-    order = M.W5["rank"] or list(toks.keys())          # fall back to all tokens if candidates not fetched yet
-    seen = set()
-    rows = []
+def _scorer_rows(S):
+    toks = S["tokens"]
+    order = S["rank"] or list(toks.keys())             # fall back to all tokens if candidates not fetched yet
+    seen, rows = set(), []
     for ca in order:
         if ca in toks and ca not in seen:
             seen.add(ca)
@@ -153,7 +167,22 @@ async def api_w5():
         if ca not in seen:
             rows.append(tkn)
     rows.sort(key=lambda t: (t.get("score") is None, -(t.get("score") or 0)))  # scored first, high→low
-    return JSONResponse(rows)
+    return rows
+
+
+@app.get("/api/w5")
+async def api_w5():
+    return JSONResponse(_scorer_rows(M.W5))
+
+
+@app.get("/api/w6")
+async def api_w6():
+    return JSONResponse(_scorer_rows(M.W6))
+
+
+@app.get("/api/w7")
+async def api_w7():
+    return JSONResponse(_scorer_rows(M.W7))
 
 
 @app.get("/api/w3")
@@ -193,13 +222,19 @@ async def api_status():
         "w4": {"enabled": M.W4["enabled"], "count": len(M.W4["rank"]), "last": M.W4["last"],
                "interval": M.W4["interval"], "running": M.W4["running"], "phase": M.W4["phase"],
                "done": M.W4["done"], "total": M.W4["total"]},
-        "w5": {"enabled": M.W5["enabled"], "count": len(M.W5["rank"]), "last": M.W5["last"],
-               "interval": M.W5["interval"], "running": M.W5["running"], "phase": M.W5["phase"],
-               "scoring": M.W5["scoring"], "pool": len(M.W5["tokens"]),
-               "scoring_sym": (M.W5["tokens"].get(M.W5["scoring"]) or {}).get("symbol") if M.W5["scoring"] else None,
-               "scored": sum(1 for t in M.W5["tokens"].values() if t.get("score") is not None)},
+        **{win: _scorer_status(S) for win, S in M.SCORERS.items()},
         "fields": M.fields_state(),
     }
+
+
+def _scorer_status(S):
+    scr = S["scoring"]
+    return {"enabled": S["enabled"], "count": len(S["rank"]), "last": S["last"], "chain": S["chain"],
+            "interval": S["interval"], "running": S["running"], "phase": S["phase"],
+            "mcap_min": S["mcap_min"], "mcap_max": S["mcap_max"], "max_age_days": S["max_age_days"],
+            "scoring": scr, "pool": len(S["tokens"]),
+            "scoring_sym": (S["tokens"].get(scr) or {}).get("symbol") if scr else None,
+            "scored": sum(1 for t in S["tokens"].values() if t.get("score") is not None)}
 
 
 # ---------------- control endpoints (persist on change) ----------------
@@ -304,31 +339,64 @@ async def api_watch_interval(ca: str, req: Request):
     return {"ok": True}
 
 
-# ---------------- deep analysis ----------------
+# ---------------- AI scorer config ----------------
+@app.post("/api/score/config")
+async def api_score_config(req: Request):
+    body = await req.json()
+    ok = M.set_score_config(body.get("win"), body.get("mcap_min"),
+                            body.get("mcap_max"), body.get("max_age_days"))
+    _save()
+    return {"ok": ok}
+
+
+# ---------------- deep analysis / custom report ----------------
 @app.post("/api/analyze")
 async def api_analyze(req: Request):
     body = await req.json()
     ca = (body.get("ca") or "").lower()
+    chain = (body.get("chain") or "robinhood").lower()
+    full = bool(body.get("full"))
     if not ca:
         return JSONResponse({"error": "ca required"}, status_code=400)
-    if analyze.JOBS.get(ca, {}).get("status") in ("gathering", "analyzing", "rendering"):
-        return {"ok": True, "status": analyze.JOBS[ca]["status"], "note": "already running"}
-    asyncio.create_task(analyze.run_analysis(ca))
-    return {"ok": True, "status": "started"}
+    if chain not in ("robinhood", "bsc", "base"):
+        return JSONResponse({"error": "unsupported chain"}, status_code=400)
+    key = analyze._jobkey(ca, chain)
+    if analyze.JOBS.get(key, {}).get("status") in ("gathering", "analyzing", "rendering"):
+        return {"ok": True, "status": analyze.JOBS[key]["status"], "note": "already running"}
+    asyncio.create_task(analyze.run_analysis(ca, chain=chain, full=full))
+    return {"ok": True, "status": "started", "key": key}
 
 
-@app.get("/api/analyze/{ca}")
-async def api_analyze_status(ca: str):
-    j = analyze.JOBS.get(ca.lower())
+def _job_status(key):
+    j = analyze.JOBS.get(key)
     if not j:
         return {"status": "none"}
     return {**j, "has_report": bool(j.get("report") and os.path.exists(j["report"]))}
 
 
-@app.get("/api/report/{ca}")
-async def api_report(ca: str):
-    j = analyze.JOBS.get(ca.lower())
+def _serve_report(key):
+    j = analyze.JOBS.get(key)
     if j and j.get("report") and os.path.exists(j["report"]):
         return FileResponse(j["report"], media_type="application/pdf",
                             filename=os.path.basename(j["report"]))
     return JSONResponse({"error": "no report"}, status_code=404)
+
+
+@app.get("/api/analyze/{ca}")
+async def api_analyze_status(ca: str):
+    return _job_status(ca.lower())
+
+
+@app.get("/api/analyze/{chain}/{ca}")
+async def api_analyze_status_chain(chain: str, ca: str):
+    return _job_status(analyze._jobkey(ca.lower(), chain.lower()))
+
+
+@app.get("/api/report/{ca}")
+async def api_report(ca: str):
+    return _serve_report(ca.lower())
+
+
+@app.get("/api/report/{chain}/{ca}")
+async def api_report_chain(chain: str, ca: str):
+    return _serve_report(analyze._jobkey(ca.lower(), chain.lower()))
